@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 导出和自动自检成功后默认自动打开生成的 Word，可在插件设置中关闭。
+
 ### Planned
 
 - 为 macOS 和 Linux 增加独立运行时；

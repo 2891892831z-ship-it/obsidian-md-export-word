@@ -4,7 +4,8 @@ chcp 65001 >nul
 set "PYTHONUTF8=1"
 set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHON_ARGS="
-if /i "%MD_EXPORT_WORD_NONINTERACTIVE%"=="1" set "PYTHON_ARGS=--yes --no-open"
+if /i "%MD_EXPORT_WORD_NONINTERACTIVE%"=="1" set "PYTHON_ARGS=--yes"
+if /i "%MD_EXPORT_WORD_NONINTERACTIVE%"=="1" if /i not "%MD_EXPORT_WORD_AUTO_OPEN%"=="1" set "PYTHON_ARGS=%PYTHON_ARGS% --no-open"
 if defined MD_EXPORT_WORD_MODE set "PYTHON_ARGS=%PYTHON_ARGS% --mode %MD_EXPORT_WORD_MODE%"
 
 set "EXPORT_SCRIPT=%~dp0md_export_word_template.py"
