@@ -3,6 +3,7 @@ setlocal EnableExtensions DisableDelayedExpansion
 chcp 65001 >nul
 set "PYTHONUTF8=1"
 set "PYTHONDONTWRITEBYTECODE=1"
+set "PYTHONUNBUFFERED=1"
 set "PYTHON_ARGS="
 if /i "%MD_EXPORT_WORD_NONINTERACTIVE%"=="1" set "PYTHON_ARGS=--yes"
 if /i "%MD_EXPORT_WORD_NONINTERACTIVE%"=="1" if /i "%MD_EXPORT_WORD_AUTO_OPEN%"=="0" set "PYTHON_ARGS=%PYTHON_ARGS% --no-open"

@@ -39,6 +39,7 @@ var path = __toESM(require("node:path"), 1);
 var PLUGIN_VERSION = "1.3.0";
 var RUNTIME_ASSET = "md-export-word-runtime-windows.zip";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
+var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var DEFAULT_TEMPLATE_FILE = "\u5BFC\u51FA\u683C\u5F0F\u6A21\u677F.docx";
 var DEFAULT_FORMAT = Object.freeze({
   preset_name: "\u5F53\u524D\u671F\u520A\u6A21\u677F",
@@ -376,6 +377,135 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
     }
   }
 };
+var ExportProgressModal = class extends import_obsidian.Modal {
+  constructor(app, fileName) {
+    super(app);
+    this.fileName = fileName;
+    this.logLines = [];
+    this.lastPercent = 0;
+    this.closedByUser = false;
+  }
+  onOpen() {
+    this.titleEl.setText("\u6B63\u5728\u5BFC\u51FA Word");
+    this.contentEl.addClass("md-export-word-progress-modal");
+    this.contentEl.createDiv({
+      cls: "md-export-word-progress-file",
+      text: this.fileName
+    });
+    this.statusEl = this.contentEl.createDiv({
+      cls: "md-export-word-progress-status",
+      text: "\u51C6\u5907\u542F\u52A8\u5BFC\u51FA\u7A0B\u5E8F\u2026"
+    });
+    this.progressEl = this.contentEl.createEl("progress", {
+      cls: "md-export-word-progress",
+      attr: { max: "100", value: "0" }
+    });
+    this.detailEl = this.contentEl.createDiv({
+      cls: "md-export-word-progress-detail",
+      text: "0%"
+    });
+    this.contentEl.createEl("h4", { text: "\u5B9E\u65F6\u8FC7\u7A0B" });
+    this.logEl = this.contentEl.createEl("pre", {
+      cls: "md-export-word-progress-log"
+    });
+    this.actionsEl = this.contentEl.createDiv({
+      cls: "md-export-word-progress-actions"
+    });
+    new import_obsidian.Setting(this.actionsEl).addButton(
+      (button) => button.setButtonText("\u9690\u85CF\u7A97\u53E3").onClick(() => this.close())
+    );
+  }
+  updateProgress(percent, stage, detail = "", level = "info") {
+    const safePercent = Math.max(
+      this.lastPercent,
+      Math.min(100, Number(percent) || 0)
+    );
+    this.lastPercent = safePercent;
+    if (this.progressEl) {
+      this.progressEl.value = safePercent;
+    }
+    if (this.statusEl) {
+      this.statusEl.setText(stage || "\u6B63\u5728\u5904\u7406\u2026");
+      this.statusEl.toggleClass("is-error", level === "error");
+      this.statusEl.toggleClass("is-success", level === "success");
+    }
+    if (this.detailEl) {
+      this.detailEl.setText(
+        detail ? `${safePercent}% \xB7 ${detail}` : `${safePercent}%`
+      );
+    }
+    this.appendLog(
+      `[${String(safePercent).padStart(3, " ")}%] ${stage}` + (detail ? ` \u2014 ${detail}` : ""),
+      level === "error"
+    );
+  }
+  appendLog(line, isError = false) {
+    const normalized = String(line || "").trim();
+    if (!normalized) {
+      return;
+    }
+    this.logLines.push(isError ? `ERROR ${normalized}` : normalized);
+    if (this.logLines.length > 120) {
+      this.logLines.splice(0, this.logLines.length - 120);
+    }
+    if (this.logEl) {
+      this.logEl.setText(this.logLines.join("\n"));
+      this.logEl.scrollTop = this.logEl.scrollHeight;
+    }
+  }
+  consumeLine(line, isError = false) {
+    const normalized = String(line || "").trim();
+    if (!normalized) {
+      return;
+    }
+    if (normalized.startsWith(PROGRESS_PREFIX)) {
+      try {
+        const payload = JSON.parse(normalized.slice(PROGRESS_PREFIX.length));
+        this.updateProgress(
+          payload.percent,
+          payload.stage,
+          payload.detail,
+          payload.level
+        );
+        return;
+      } catch (error) {
+        this.appendLog(`\u65E0\u6CD5\u89E3\u6790\u8FDB\u5EA6\u4E8B\u4EF6\uFF1A${error.message}`, true);
+      }
+    }
+    this.appendLog(normalized, isError);
+  }
+  complete(wordName) {
+    this.updateProgress(100, "\u5BFC\u51FA\u5B8C\u6210", wordName, "success");
+    if (!this.actionsEl) {
+      return;
+    }
+    this.actionsEl.empty();
+    new import_obsidian.Setting(this.actionsEl).addButton(
+      (button) => button.setButtonText("\u5B8C\u6210\u5E76\u5173\u95ED").setCta().onClick(() => this.close())
+    );
+  }
+  fail(summary, logPath) {
+    this.updateProgress(
+      100,
+      "\u5BFC\u51FA\u5931\u8D25",
+      logPath ? `\u9519\u8BEF\u65E5\u5FD7\uFF1A${logPath}` : summary,
+      "error"
+    );
+    if (summary) {
+      this.appendLog(summary, true);
+    }
+    if (!this.actionsEl) {
+      return;
+    }
+    this.actionsEl.empty();
+    new import_obsidian.Setting(this.actionsEl).addButton(
+      (button) => button.setButtonText("\u5173\u95ED").setWarning().onClick(() => this.close())
+    );
+  }
+  onClose() {
+    this.closedByUser = true;
+  }
+};
 var TextInputModal = class extends import_obsidian.Modal {
   constructor(app, title, description, initialValue, resolve) {
     super(app);
@@ -434,6 +564,36 @@ function runProcess(executable, args, options = {}) {
     child.once("error", reject);
     child.once("close", (code) => resolve({ code, output }));
   });
+}
+function humanizeProcessOutput(output) {
+  return String(output || "").split(/\r?\n/).map((line) => {
+    const normalized = line.trim();
+    if (!normalized.startsWith(PROGRESS_PREFIX)) {
+      return line;
+    }
+    try {
+      const event = JSON.parse(normalized.slice(PROGRESS_PREFIX.length));
+      return `[${event.percent}%] ${event.stage}` + (event.detail ? ` \u2014 ${event.detail}` : "");
+    } catch {
+      return line;
+    }
+  }).join("\n").trim();
+}
+function appendFailureProcessOutput(logPath, output) {
+  const humanOutput = humanizeProcessOutput(output);
+  if (!humanOutput) {
+    return;
+  }
+  const section = "\nObsidian captured process output\n--------------------------------\n" + humanOutput + "\n";
+  if (fs.existsSync(logPath)) {
+    fs.appendFileSync(logPath, section, "utf8");
+  } else {
+    fs.writeFileSync(
+      logPath,
+      "MD Export Word failure report\n" + section,
+      "utf8"
+    );
+  }
 }
 var MdExportWordSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -852,6 +1012,23 @@ catch {
     }
     let output = "";
     let failedToStart = false;
+    const failureLogPath = path.join(
+      path.dirname(markdownPath),
+      `${file.basename}-\u5BFC\u51FA\u5931\u8D25.log.txt`
+    );
+    if (fs.existsSync(failureLogPath)) {
+      try {
+        fs.unlinkSync(failureLogPath);
+      } catch {
+      }
+    }
+    const progressModal = new ExportProgressModal(this.app, file.name);
+    progressModal.open();
+    progressModal.updateProgress(
+      1,
+      "\u542F\u52A8\u5BFC\u51FA\u7A0B\u5E8F",
+      `${exportMode === "strict" ? "\u4E25\u683C\u6A21\u5F0F" : "\u517C\u5BB9\u6A21\u5F0F"} \xB7 ` + formatSelection.displayName
+    );
     const child = (0, import_node_child_process.spawn)(
       "cmd.exe",
       ["/d", "/c", "call", commandPath, markdownPath],
@@ -861,6 +1038,7 @@ catch {
           ...process.env,
           MD_EXPORT_WORD_NONINTERACTIVE: "1",
           MD_EXPORT_WORD_AUTO_OPEN: this.exportSettings.autoOpen === false ? "0" : "1",
+          MD_EXPORT_WORD_FAILURE_LOG: failureLogPath,
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
           MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config)
@@ -869,31 +1047,75 @@ catch {
         stdio: ["pipe", "pipe", "pipe"]
       }
     );
-    const collectOutput = (data) => {
-      output += data.toString("utf8");
+    const lineBuffers = { stdout: "", stderr: "" };
+    const collectOutput = (data, streamName) => {
+      const text = data.toString("utf8");
+      output += text;
       if (output.length > 12e3) {
         output = output.slice(-12e3);
       }
+      lineBuffers[streamName] += text;
+      const lines = lineBuffers[streamName].split(/\r?\n/);
+      lineBuffers[streamName] = lines.pop() || "";
+      for (const line of lines) {
+        progressModal.consumeLine(line, streamName === "stderr");
+      }
     };
-    child.stdout.on("data", collectOutput);
-    child.stderr.on("data", collectOutput);
+    const flushLineBuffers = () => {
+      for (const streamName of ["stdout", "stderr"]) {
+        if (lineBuffers[streamName]) {
+          progressModal.consumeLine(
+            lineBuffers[streamName],
+            streamName === "stderr"
+          );
+          lineBuffers[streamName] = "";
+        }
+      }
+    };
+    child.stdout.on("data", (data) => collectOutput(data, "stdout"));
+    child.stderr.on("data", (data) => collectOutput(data, "stderr"));
     child.stdin.on("error", () => {
     });
     child.once("error", (error) => {
       failedToStart = true;
+      const launchError = `\u542F\u52A8 Word \u5BFC\u51FA\u5931\u8D25\uFF1A${error.message}`;
+      output += `
+${launchError}
+`;
+      try {
+        appendFailureProcessOutput(failureLogPath, output);
+      } catch {
+      }
+      progressModal.fail(launchError, failureLogPath);
       new import_obsidian.Notice(`\u542F\u52A8 Word \u5BFC\u51FA\u5931\u8D25\uFF1A${error.message}`);
     });
     child.once("close", (code) => {
+      flushLineBuffers();
       if (failedToStart) {
         return;
       }
       if (code === 0) {
         const wordMatch = output.match(/Word：([^\r\n]+)/);
         const wordName = wordMatch ? path.basename(wordMatch[1].trim()) : `${file.basename}-\u7F16\u8F91\u5BA1\u9605\u7A3F.docx`;
+        if (fs.existsSync(failureLogPath)) {
+          try {
+            fs.unlinkSync(failureLogPath);
+          } catch {
+          }
+        }
+        progressModal.complete(wordName);
         new import_obsidian.Notice(`Word export completed: ${wordName}`, 8e3);
         return;
       }
-      const details = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-4).join("\uFF1B");
+      try {
+        appendFailureProcessOutput(failureLogPath, output);
+      } catch {
+      }
+      const details = humanizeProcessOutput(output).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-4).join("\uFF1B");
+      progressModal.fail(
+        details || `Word export failed with code ${code}.`,
+        failureLogPath
+      );
       new import_obsidian.Notice(
         details ? `Word export failed (${code}): ${details}` : `Word export failed with code ${code}.`,
         12e3

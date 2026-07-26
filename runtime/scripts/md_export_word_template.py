@@ -6,7 +6,7 @@ Markdown is the only content authority. The program:
 2. exports through Pandoc + pandoc-crossref + zotero.lua;
 3. applies the confirmed Word typography/layout rules;
 4. inserts a live Zotero bibliography field;
-5. validates the DOCX package and writes a human-readable log.
+5. validates the DOCX package and writes a diagnostic log only on failure.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import traceback
 import urllib.parse
 import urllib.request
 from collections import Counter
@@ -181,9 +182,64 @@ def format_config_summary(config: dict[str, Any]) -> str:
 def configure_console() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=True,
+                write_through=True,
+            )
         except Exception:
             pass
+
+
+def emit_progress(
+    percent: int,
+    stage: str,
+    detail: str = "",
+    *,
+    level: str = "info",
+) -> None:
+    payload = {
+        "percent": max(0, min(100, int(percent))),
+        "stage": stage,
+        "detail": detail,
+        "level": level,
+    }
+    print(
+        "@@MD_EXPORT_PROGRESS@@"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+
+
+def failure_log_path() -> Path:
+    configured = os.environ.get("MD_EXPORT_WORD_FAILURE_LOG", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if len(sys.argv) > 1:
+        markdown = Path(sys.argv[1]).expanduser().resolve()
+        return markdown.with_name(f"{markdown.stem}-导出失败.log.txt")
+    return Path.cwd() / "MD导出Word-导出失败.log.txt"
+
+
+def write_failure_log(exc: BaseException, traceback_text: str = "") -> Path | None:
+    try:
+        path = failure_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "MD Export Word failure report",
+            f"Time: {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Error type: {type(exc).__name__}",
+            f"Error: {exc}",
+            f"Command: {subprocess.list2cmdline(sys.argv)}",
+        ]
+        if traceback_text:
+            lines.extend(["", "Traceback:", traceback_text.rstrip()])
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+    except Exception as log_error:
+        print(f"无法写入错误日志：{log_error}", file=sys.stderr, flush=True)
+        return None
 
 
 def select_export_mode_gui() -> str | None:
@@ -3187,73 +3243,6 @@ def run_pandoc(
     return combined
 
 
-def write_log(
-    path: Path,
-    *,
-    md_path: Path,
-    output_path: Path,
-    source_hash: str,
-    template: Path,
-    template_hash: str,
-    format_config: dict[str, Any],
-    inventory: dict[str, Any],
-    scripts: dict[str, int],
-    prepare_report: dict[str, Any],
-    pandoc_output: str,
-    format_report: dict[str, Any],
-) -> None:
-    timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines = [
-        "MD 导出 Word 编辑审阅稿处理报告",
-        f"时间：{timestamp}",
-        f"Markdown：{md_path}",
-        f"Markdown SHA-256：{source_hash}",
-        f"格式模板：{template}",
-        f"模板 SHA-256：{template_hash}",
-        f"格式方案：{format_config_summary(format_config)}",
-        "格式设置 JSON："
-        + json.dumps(format_config, ensure_ascii=False, sort_keys=True),
-        f"Word：{output_path}",
-        f"Word SHA-256：{sha256_file(output_path)}",
-        "",
-        "预检：",
-        "- 导出模式："
-        + (
-            "严格模式"
-            if inventory.get("export_mode") == "strict"
-            else "兼容模式"
-        ),
-        f"- 图片：{len(inventory['image_targets'])}",
-        f"- 正式表格：{inventory['table_count']}",
-        f"- 公式：{inventory['math_count']}",
-        f"- 正文题目：{prepare_report['document_title']}（仅导出 1 次）",
-        f"- 注释段落：{prepare_report['note_paragraphs']}",
-        f"- Zotero 引文域：{inventory['citation_clusters']}",
-        "- 缺失 citekey："
-        + (
-            "无"
-            if not inventory.get("missing_citekeys")
-            else "、".join(
-                f"@{key}" for key in inventory["missing_citekeys"]
-            )
-        ),
-        "- 未解析引用簇："
-        f"{inventory.get('unresolved_citation_clusters', 0)}",
-        f"- 唯一 citekey：{len(inventory['citekeys'])}",
-        f"- 下标标记：{scripts['subscript_tags']}",
-        f"- 上标标记：{scripts['superscript_tags']}",
-        f"- 公式编号：{prepare_report['equation_numbers']}",
-        f"- frontmatter 题目已在临时副本中抑制："
-        f"{prepare_report['frontmatter_title_suppressed']}",
-        "",
-        "格式与严格校验：",
-        json.dumps(format_report, ensure_ascii=False, indent=2),
-    ]
-    if pandoc_output:
-        lines.extend(["", "Pandoc 输出：", pandoc_output])
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="从 Obsidian Markdown 生成 Word 编辑审阅稿"
@@ -3282,6 +3271,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     configure_console()
+    emit_progress(2, "初始化导出环境")
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
     pandoc_root = script_dir.parent
@@ -3330,6 +3320,7 @@ def main() -> int:
     if md_path.suffix.lower() not in (".md", ".markdown"):
         raise ExportError(f"输入必须是 Markdown：{md_path}")
 
+    emit_progress(8, "读取 Markdown", md_path.name)
     mode_was_prompted = args.mode is None
     export_mode = args.mode or select_export_mode_gui()
     if export_mode is None:
@@ -3343,6 +3334,7 @@ def main() -> int:
     source = md_path.read_text(encoding="utf-8")
     prepared, prepare_report = prepare_markdown(source)
     scripts = source_script_counts(prepared)
+    emit_progress(18, "规范化 Markdown", "标题、图片、引用间距与公式标签")
     output_path = (
         args.output.expanduser().resolve()
         if args.output
@@ -3360,6 +3352,7 @@ def main() -> int:
         resource_path = os.pathsep.join(
             [str(vault_root), str(md_path.parent)]
         )
+        emit_progress(26, "解析文档结构", "扫描图片、表格、公式和引用")
         ast = pandoc_ast(
             pandoc,
             prepared_md,
@@ -3381,6 +3374,13 @@ def main() -> int:
                 "发现缺失图片，已停止导出：\n- "
                 + "\n- ".join(missing_images)
             )
+        emit_progress(
+            36,
+            "检查文档资源",
+            f"图片 {len(image_paths)}；表格 {inventory['table_count']}；"
+            f"公式 {inventory['math_count']}",
+        )
+        emit_progress(42, "检查 Zotero 引用", f"citekey {len(inventory['citekeys'])}")
         missing_keys, duplicate_keys = check_citekeys(
             inventory["citekeys"]
         )
@@ -3436,6 +3436,11 @@ def main() -> int:
                 + "\n- ".join(duplicate_keys)
             )
 
+        emit_progress(
+            52,
+            "预检完成",
+            f"模式 {export_mode}；缺失 citekey {len(missing_keys)}",
+        )
         print_preflight(
             md_path=md_path,
             output_path=output_path,
@@ -3456,6 +3461,7 @@ def main() -> int:
                 return 0
 
         raw_docx = temp_dir / "pandoc-raw.docx"
+        emit_progress(60, "生成 Word 初稿", "运行 Pandoc 与 pandoc-crossref")
         pandoc_output = run_pandoc(
             pandoc=pandoc,
             crossref=crossref,
@@ -3468,6 +3474,8 @@ def main() -> int:
             vault_root=vault_root,
             md_parent=md_path.parent,
         )
+        emit_progress(74, "Word 初稿已生成", raw_docx.name)
+        emit_progress(78, "处理 Word 格式", "字体、上下标、公式、图表和 Zotero 域")
         format_report = patch_docx(
             raw_docx,
             output_path,
@@ -3476,26 +3484,12 @@ def main() -> int:
             format_config=format_config,
         )
         format_report["duplicate_citekeys_resolved"] = duplicate_keys
+        emit_progress(92, "自动检查 Word", "结构、编号、引用域与格式均已检查")
 
+    emit_progress(96, "确认源文件", "检查导出期间 Markdown 是否发生变化")
     if sha256_file(md_path) != source_hash_before:
         output_path.unlink(missing_ok=True)
         raise ExportError("源 Markdown 在导出过程中发生变化，已删除输出")
-
-    log_path = output_path.with_suffix(".log.txt")
-    write_log(
-        log_path,
-        md_path=md_path,
-        output_path=output_path,
-        source_hash=source_hash_before,
-        template=template,
-        template_hash=sha256_file(template),
-        format_config=format_config,
-        inventory=inventory,
-        scripts=scripts,
-        prepare_report=prepare_report,
-        pandoc_output=pandoc_output,
-        format_report=format_report,
-    )
 
     print("\n导出成功。")
     validation = format_report["validation"]
@@ -3510,13 +3504,15 @@ def main() -> int:
         "）"
     )
     print(f"Word：{output_path}")
-    print(f"日志：{log_path}")
+    print("日志：成功时不生成；仅在失败时写入导出失败.log.txt。")
     print("说明：首次打开后可在 Zotero 中执行 Refresh。")
     if not args.no_open:
+        emit_progress(99, "正在打开 Word", output_path.name)
         try:
             os.startfile(output_path)  # type: ignore[attr-defined]
         except Exception as exc:
             print(f"无法自动打开 Word：{exc}")
+    emit_progress(100, "导出完成", output_path.name, level="success")
     return 0
 
 
@@ -3524,8 +3520,21 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except ExportError as exc:
-        print(f"\n错误：{exc}", file=sys.stderr)
+        emit_progress(100, "导出失败", str(exc), level="error")
+        error_log = write_failure_log(exc)
+        print(f"\n错误：{exc}", file=sys.stderr, flush=True)
+        if error_log:
+            print(f"错误日志：{error_log}", file=sys.stderr, flush=True)
         raise SystemExit(1)
     except KeyboardInterrupt:
-        print("\n已取消。", file=sys.stderr)
+        emit_progress(100, "已取消", "用户中止导出", level="warning")
+        print("\n已取消。", file=sys.stderr, flush=True)
+    except Exception as exc:
+        traceback_text = traceback.format_exc()
+        emit_progress(100, "导出失败", str(exc), level="error")
+        error_log = write_failure_log(exc, traceback_text)
+        print(f"\n未预期错误：{exc}", file=sys.stderr, flush=True)
+        if error_log:
+            print(f"错误日志：{error_log}", file=sys.stderr, flush=True)
+        raise SystemExit(1)
         raise SystemExit(130)
