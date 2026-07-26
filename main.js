@@ -160,6 +160,29 @@ function safeDefaultOutputBaseName(value, fallback) {
   const fallbackResult = normalizeOutputBaseName(fallback);
   return fallbackResult.value || "\u5BFC\u51FA\u6587\u6863";
 }
+function fileTimestamp(date = /* @__PURE__ */ new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+function uniqueOutputPath(requestedPath) {
+  if (!fs.existsSync(requestedPath)) {
+    return requestedPath;
+  }
+  const directory = path.dirname(requestedPath);
+  const extension = path.extname(requestedPath) || ".docx";
+  const stem = path.basename(requestedPath, extension);
+  const stampedStem = `${stem}-${fileTimestamp()}`;
+  let candidate = path.join(directory, `${stampedStem}${extension}`);
+  let sequence = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(
+      directory,
+      `${stampedStem}-${sequence}${extension}`
+    );
+    sequence += 1;
+  }
+  return candidate;
+}
 var ExportModeModal = class extends import_obsidian.Modal {
   constructor(app, resolve) {
     super(app);
@@ -278,7 +301,9 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
     contentEl.createEl("p", {
       text: "\u4E0D\u4FEE\u6539\u4EFB\u4F55\u9009\u9879\u65F6\u4F7F\u7528\u5F53\u524D\u671F\u520A\u6A21\u677F\uFF08" + formatSummary(DEFAULT_FORMAT) + "\uFF09\u3002"
     });
-    new import_obsidian.Setting(contentEl).setName("Word \u6587\u4EF6\u540D").setDesc("\u9ED8\u8BA4\u8BFB\u53D6 Markdown \u7684\u6587\u7AE0\u4E00\u7EA7\u6807\u9898\uFF1B\u53EF\u76F4\u63A5\u4FEE\u6539\uFF0C\u65E0\u9700\u8F93\u5165 .docx\u3002").addText((text) => {
+    new import_obsidian.Setting(contentEl).setName("Word \u6587\u4EF6\u540D").setDesc(
+      "\u9ED8\u8BA4\u8BFB\u53D6 Markdown \u7684\u6587\u7AE0\u4E00\u7EA7\u6807\u9898\uFF1B\u53EF\u76F4\u63A5\u4FEE\u6539\uFF0C\u65E0\u9700\u8F93\u5165 .docx\uFF1B\u540C\u540D\u6587\u4EF6\u81EA\u52A8\u6DFB\u52A0\u65F6\u95F4\u6233\u3002"
+    ).addText((text) => {
       text.inputEl.style.width = "min(420px, 52vw)";
       text.setPlaceholder("\u8BF7\u8F93\u5165 Word \u6587\u4EF6\u540D").setValue(this.outputName).onChange((value) => {
         this.outputName = value;
@@ -1101,16 +1126,16 @@ catch {
       await this.saveData(this.exportSettings);
       new import_obsidian.Notice(`\u5DF2\u4FDD\u5B58\u683C\u5F0F\u65B9\u6848\uFF1A${formatSelection.presetName}`);
     }
-    const outputPath = path.join(
+    const requestedOutputPath = path.join(
       path.dirname(markdownPath),
       `${formatSelection.outputName}.docx`
     );
-    if (fs.existsSync(outputPath)) {
+    const outputPath = uniqueOutputPath(requestedOutputPath);
+    if (outputPath !== requestedOutputPath) {
       new import_obsidian.Notice(
-        `\u540C\u540D Word \u5DF2\u5B58\u5728\uFF1A${path.basename(outputPath)}\u3002\u8BF7\u91CD\u65B0\u5BFC\u51FA\u5E76\u4FEE\u6539\u6587\u4EF6\u540D\u3002`,
-        12e3
+        `\u540C\u540D Word \u5DF2\u5B58\u5728\uFF0C\u539F\u6587\u4EF6\u4FDD\u6301\u4E0D\u53D8\uFF1B\u672C\u6B21\u53E6\u5B58\u4E3A\uFF1A` + path.basename(outputPath),
+        1e4
       );
-      return;
     }
     let output = "";
     let failedToStart = false;
