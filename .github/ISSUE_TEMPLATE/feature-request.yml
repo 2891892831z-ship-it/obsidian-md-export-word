@@ -1,0 +1,38 @@
+name: Feature request
+description: 建议新的模板、格式能力、平台或工作流
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 需要解决的问题
+      description: 请描述实际文档场景，而不只是某个按钮名称。
+    validations:
+      required: true
+  - type: textarea
+    id: format
+    attributes:
+      label: 目标格式或示例
+      description: 可附公开的期刊/学校格式说明链接。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - 插件界面
+        - Word 模板
+        - Markdown 解析
+        - Zotero
+        - 图表或公式
+        - 安装与运行时
+        - 其他
+    validations:
+      required: true
