@@ -14,7 +14,7 @@ import * as path from "node:path";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.3.0";
+const PLUGIN_VERSION = "1.3.1";
 const RUNTIME_ASSET = "md-export-word-runtime-windows.zip";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
@@ -90,6 +90,96 @@ function formatSummary(config) {
   );
 }
 
+function visibleMarkdownHeading(text) {
+  return String(text || "")
+    .trim()
+    .replace(/\s+#+\s*$/, "")
+    .replace(/[*_`~]/g, "")
+    .trim();
+}
+
+function markdownArticleTitle(source, fallback) {
+  const lines = String(source || "").split(/\r?\n/);
+  let bodyStart = 0;
+  let metadataTitle = "";
+  if (lines[0]?.trim() === "---") {
+    const frontmatterEnd = lines
+      .slice(1)
+      .findIndex((line) => line.trim() === "---");
+    if (frontmatterEnd >= 0) {
+      bodyStart = frontmatterEnd + 2;
+      for (const line of lines.slice(1, bodyStart - 1)) {
+        const match = line.match(/^\s*title\s*:\s*(.*?)\s*$/i);
+        if (
+          match &&
+          !["", "|", ">", "|-", ">-"].includes(match[1].trim())
+        ) {
+          metadataTitle = match[1].trim().replace(/^["']|["']$/g, "");
+          break;
+        }
+      }
+    }
+  }
+  for (const line of lines.slice(bodyStart)) {
+    const match = line.match(/^\s*#\s+(.+?)\s*$/);
+    if (match) {
+      const title = visibleMarkdownHeading(match[1]);
+      if (title) {
+        return title;
+      }
+    }
+  }
+  return metadataTitle || String(fallback || "").trim();
+}
+
+function isInvalidWindowsFileNameCharacter(character) {
+  return (
+    character.charCodeAt(0) < 32 ||
+    '<>:"/\\|?*'.includes(character)
+  );
+}
+
+function normalizeOutputBaseName(value) {
+  const outputName = String(value || "")
+    .trim()
+    .replace(/\.docx$/i, "")
+    .trim();
+  if (!outputName) {
+    return { error: "Word 文件名不能为空。" };
+  }
+  if ([...outputName].some(isInvalidWindowsFileNameCharacter)) {
+    return {
+      error: 'Word 文件名不能包含 < > : " / \\ | ? * 等字符。'
+    };
+  }
+  if (/[. ]$/.test(outputName)) {
+    return { error: "Word 文件名不能以句点或空格结尾。" };
+  }
+  if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(outputName)) {
+    return { error: `“${outputName}”是 Windows 保留文件名，请更换。` };
+  }
+  return { value: outputName };
+}
+
+function safeDefaultOutputBaseName(value, fallback) {
+  const clean = String(value || "")
+    .trim()
+    .replace(/\.docx$/i, "")
+    .split("")
+    .map((character) =>
+      isInvalidWindowsFileNameCharacter(character) ? "-" : character
+    )
+    .join("")
+    .replace(/[. ]+$/g, "")
+    .trim();
+  const result = normalizeOutputBaseName(clean);
+  if (result.value) {
+    return result.value;
+  }
+  const fallbackResult = normalizeOutputBaseName(fallback);
+  return fallbackResult.value || "导出文档";
+}
+
 class ExportModeModal extends Modal {
   constructor(app, resolve) {
     super(app);
@@ -160,6 +250,7 @@ class FormatSettingsModal extends Modal {
       ? DEFAULT_TEMPLATE_FILE
       : this.templateFiles[0];
     this.presetName = "";
+    this.outputName = options.outputName || "导出文档";
   }
 
   usePreset(value) {
@@ -184,6 +275,11 @@ class FormatSettingsModal extends Modal {
   }
 
   finish({ useDefault = false, savePreset = false } = {}) {
+    const normalizedOutput = normalizeOutputBaseName(this.outputName);
+    if (!normalizedOutput.value) {
+      new Notice(normalizedOutput.error);
+      return;
+    }
     const config = useDefault ? cloneFormat() : cloneFormat(this.config);
     const templateFile = useDefault
       ? this.templateFiles.includes(DEFAULT_TEMPLATE_FILE)
@@ -217,7 +313,8 @@ class FormatSettingsModal extends Modal {
       templateFile,
       savePreset,
       presetName: requestedName,
-      displayName
+      displayName,
+      outputName: normalizedOutput.value
     });
   }
 
@@ -252,6 +349,19 @@ class FormatSettingsModal extends Modal {
         formatSummary(DEFAULT_FORMAT) +
         "）。"
     });
+
+    new Setting(contentEl)
+      .setName("Word 文件名")
+      .setDesc("默认读取 Markdown 的文章一级标题；可直接修改，无需输入 .docx。")
+      .addText((text) => {
+        text.inputEl.style.width = "min(420px, 52vw)";
+        text
+          .setPlaceholder("请输入 Word 文件名")
+          .setValue(this.outputName)
+          .onChange((value) => {
+            this.outputName = value;
+          });
+      });
 
     new Setting(contentEl)
       .setName("格式方案")
@@ -1117,13 +1227,14 @@ catch {
     });
   }
 
-  selectFormatSettings(templateFiles) {
+  selectFormatSettings(templateFiles, outputName) {
     return new Promise((resolve) => {
       new FormatSettingsModal(
         this.app,
         {
           presets: this.exportSettings.presets,
-          templateFiles
+          templateFiles,
+          outputName
         },
         resolve
       ).open();
@@ -1145,6 +1256,17 @@ catch {
 
     const vaultPath = adapter.getBasePath();
     const markdownPath = path.join(vaultPath, file.path);
+    let markdownSource = "";
+    try {
+      markdownSource = await this.app.vault.cachedRead(file);
+    } catch (error) {
+      new Notice(`无法读取当前 Markdown：${error.message}`);
+      return;
+    }
+    const defaultOutputName = safeDefaultOutputBaseName(
+      markdownArticleTitle(markdownSource, file.basename),
+      file.basename
+    );
     let runtimeStatus = this.runtimeStatus();
     if (!runtimeStatus.ready) {
       const installed = await this.installRuntime();
@@ -1193,7 +1315,10 @@ catch {
       return;
     }
 
-    const formatSelection = await this.selectFormatSettings(templateFiles);
+    const formatSelection = await this.selectFormatSettings(
+      templateFiles,
+      defaultOutputName
+    );
     if (!formatSelection) {
       new Notice("已取消 Word 导出。");
       return;
@@ -1216,6 +1341,18 @@ catch {
       };
       await this.saveData(this.exportSettings);
       new Notice(`已保存格式方案：${formatSelection.presetName}`);
+    }
+
+    const outputPath = path.join(
+      path.dirname(markdownPath),
+      `${formatSelection.outputName}.docx`
+    );
+    if (fs.existsSync(outputPath)) {
+      new Notice(
+        `同名 Word 已存在：${path.basename(outputPath)}。请重新导出并修改文件名。`,
+        12000
+      );
+      return;
     }
 
     let output = "";
@@ -1250,6 +1387,7 @@ catch {
           MD_EXPORT_WORD_AUTO_OPEN:
             this.exportSettings.autoOpen === false ? "0" : "1",
           MD_EXPORT_WORD_FAILURE_LOG: failureLogPath,
+          MD_EXPORT_WORD_OUTPUT: outputPath,
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
           MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config)
@@ -1308,7 +1446,7 @@ catch {
         const wordMatch = output.match(/Word：([^\r\n]+)/);
         const wordName = wordMatch
           ? path.basename(wordMatch[1].trim())
-          : `${file.basename}-编辑审阅稿.docx`;
+          : path.basename(outputPath);
         if (fs.existsSync(failureLogPath)) {
           try {
             fs.unlinkSync(failureLogPath);
@@ -1347,7 +1485,8 @@ catch {
 
     const modeLabel = exportMode === "strict" ? "严格模式" : "兼容模式";
     new Notice(
-      `正在导出（${modeLabel}｜${formatSelection.displayName}）：${file.name}`
+      `正在导出（${modeLabel}｜${formatSelection.displayName}）：` +
+        path.basename(outputPath)
     );
   }
 };

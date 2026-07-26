@@ -3130,12 +3130,27 @@ def validate_docx(
     return validation_result
 
 
-def unique_output_path(md_path: Path) -> Path:
-    base = md_path.with_name(md_path.stem + "-编辑审阅稿.docx")
+def safe_output_stem(value: str, fallback: str) -> str:
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", value.strip())
+    stem = re.sub(r"[. ]+$", "", stem).strip()
+    if not stem:
+        stem = fallback.strip()
+    if re.fullmatch(
+        r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])",
+        stem,
+        flags=re.IGNORECASE,
+    ):
+        stem += "-文档"
+    return stem or "导出文档"
+
+
+def unique_output_path(md_path: Path, document_title: str = "") -> Path:
+    output_stem = safe_output_stem(document_title, md_path.stem)
+    base = md_path.with_name(output_stem + ".docx")
     if not base.exists():
         return base
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return md_path.with_name(md_path.stem + f"-编辑审阅稿-{stamp}.docx")
+    return md_path.with_name(output_stem + f"-{stamp}.docx")
 
 
 def print_preflight(
@@ -3245,7 +3260,7 @@ def run_pandoc(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="从 Obsidian Markdown 生成 Word 编辑审阅稿"
+        description="从 Obsidian Markdown 生成格式化 Word 文档"
     )
     parser.add_argument("markdown", type=Path)
     parser.add_argument("--yes", action="store_true", help="跳过确认")
@@ -3335,10 +3350,14 @@ def main() -> int:
     prepared, prepare_report = prepare_markdown(source)
     scripts = source_script_counts(prepared)
     emit_progress(18, "规范化 Markdown", "标题、图片、引用间距与公式标签")
+    output_value = args.output or os.environ.get("MD_EXPORT_WORD_OUTPUT")
     output_path = (
-        args.output.expanduser().resolve()
-        if args.output
-        else unique_output_path(md_path)
+        Path(output_value).expanduser().resolve()
+        if output_value
+        else unique_output_path(
+            md_path,
+            str(prepare_report.get("document_title", "")),
+        )
     )
     if output_path.resolve() == md_path.resolve():
         raise ExportError("输出不能覆盖 Markdown")
