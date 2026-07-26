@@ -567,6 +567,18 @@ class MdExportWordSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("导出成功后自动打开 Word")
+      .setDesc("默认开启；只有导出和自动自检均成功时才会打开生成的 .docx。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.exportSettings.autoOpen !== false)
+          .onChange(async (value) => {
+            this.plugin.exportSettings.autoOpen = value;
+            await this.plugin.saveData(this.plugin.exportSettings);
+          })
+      );
+
+    new Setting(containerEl)
       .setName("Word 导出运行时")
       .setDesc(this.plugin.runtimeStatusText())
       .addButton((button) =>
@@ -1028,6 +1040,8 @@ catch {
         env: {
           ...process.env,
           MD_EXPORT_WORD_NONINTERACTIVE: "1",
+          MD_EXPORT_WORD_AUTO_OPEN:
+            this.exportSettings.autoOpen === false ? "0" : "1",
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
           MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config)

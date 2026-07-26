@@ -452,6 +452,12 @@ var MdExportWordSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveData(this.plugin.exportSettings);
       })
     );
+    new import_obsidian.Setting(containerEl).setName("\u5BFC\u51FA\u6210\u529F\u540E\u81EA\u52A8\u6253\u5F00 Word").setDesc("\u9ED8\u8BA4\u5F00\u542F\uFF1B\u53EA\u6709\u5BFC\u51FA\u548C\u81EA\u52A8\u81EA\u68C0\u5747\u6210\u529F\u65F6\u624D\u4F1A\u6253\u5F00\u751F\u6210\u7684 .docx\u3002").addToggle(
+      (toggle) => toggle.setValue(this.plugin.exportSettings.autoOpen !== false).onChange(async (value) => {
+        this.plugin.exportSettings.autoOpen = value;
+        await this.plugin.saveData(this.plugin.exportSettings);
+      })
+    );
     new import_obsidian.Setting(containerEl).setName("Word \u5BFC\u51FA\u8FD0\u884C\u65F6").setDesc(this.plugin.runtimeStatusText()).addButton(
       (button) => button.setButtonText("\u5B89\u88C5\u6216\u4FEE\u590D").setCta().onClick(async () => {
         await this.plugin.installRuntime();
@@ -854,6 +860,7 @@ catch {
         env: {
           ...process.env,
           MD_EXPORT_WORD_NONINTERACTIVE: "1",
+          MD_EXPORT_WORD_AUTO_OPEN: this.exportSettings.autoOpen === false ? "0" : "1",
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
           MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config)
