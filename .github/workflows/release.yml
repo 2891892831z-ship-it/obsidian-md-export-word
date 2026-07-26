@@ -1,0 +1,107 @@
+name: Release Obsidian plugin and Windows runtime
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Use Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: runtime/requirements.txt
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Validate release version
+        run: node scripts/validate-release.mjs "${{ github.ref_name }}"
+
+      - name: Check and build plugin
+        run: |
+          npm run check
+          npm run build
+
+      - name: Download official matching binaries
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Path vendor -Force | Out-Null
+          gh release download 3.8.2.1 --repo jgm/pandoc --pattern "pandoc-3.8.2.1-windows-x86_64.zip" --dir vendor
+          gh release download v0.3.22a --repo lierdakil/pandoc-crossref --pattern "*Windows-X64*" --dir vendor
+          7z x "vendor\pandoc-3.8.2.1-windows-x86_64.zip" "-ovendor\pandoc" -y
+          $crossrefArchive = Get-ChildItem -LiteralPath vendor -File | Where-Object { $_.Name -like "*Windows-X64*" } | Select-Object -First 1
+          if (-not $crossrefArchive) { throw "pandoc-crossref Windows asset not found" }
+          7z x $crossrefArchive.FullName "-ovendor\crossref" -y
+
+      - name: Locate and verify binaries
+        id: binaries
+        shell: pwsh
+        run: |
+          $pandoc = Get-ChildItem -LiteralPath vendor\pandoc -Recurse -Filter pandoc.exe | Select-Object -First 1
+          $crossref = Get-ChildItem -LiteralPath vendor\crossref -Recurse -Filter pandoc-crossref.exe | Select-Object -First 1
+          if (-not $pandoc -or -not $crossref) { throw "Required binaries not found" }
+          & $pandoc.FullName --version | Select-Object -First 1
+          & $crossref.FullName --version
+          "pandoc=$($pandoc.FullName)" >> $env:GITHUB_OUTPUT
+          "crossref=$($crossref.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Python smoke test
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r runtime\requirements.txt
+          $env:MD_EXPORT_WORD_PANDOC = "${{ steps.binaries.outputs.pandoc }}"
+          $env:MD_EXPORT_WORD_CROSSREF = "${{ steps.binaries.outputs.crossref }}"
+          python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible --output dist\smoke.docx
+          if (-not (Test-Path -LiteralPath dist\smoke.docx)) { throw "Smoke Word was not generated" }
+
+      - name: Build Windows runtime
+        shell: pwsh
+        run: |
+          .\scripts\build-runtime.ps1 `
+            -PandocExe "${{ steps.binaries.outputs.pandoc }}" `
+            -CrossrefExe "${{ steps.binaries.outputs.crossref }}"
+
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+            dist/md-export-word-runtime-windows.zip
+            dist/SHA256SUMS.txt
+
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            --title "${{ github.ref_name }}" `
+            --draft `
+            main.js `
+            manifest.json `
+            styles.css `
+            dist\md-export-word-runtime-windows.zip `
+            dist\SHA256SUMS.txt

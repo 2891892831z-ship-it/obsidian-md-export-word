@@ -1,0 +1,13 @@
+node_modules/
+dist/*
+!dist/.gitkeep
+runtime/.venv/
+runtime/Pandoc&pandoc-crossref/*.exe
+*.log
+*.tmp
+*.bak
+*.docx~
+~$*
+.runtime-*
+.DS_Store
+Thumbs.db
