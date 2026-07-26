@@ -180,6 +180,34 @@ function safeDefaultOutputBaseName(value, fallback) {
   return fallbackResult.value || "导出文档";
 }
 
+function fileTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return (
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
+    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+  );
+}
+
+function uniqueOutputPath(requestedPath) {
+  if (!fs.existsSync(requestedPath)) {
+    return requestedPath;
+  }
+  const directory = path.dirname(requestedPath);
+  const extension = path.extname(requestedPath) || ".docx";
+  const stem = path.basename(requestedPath, extension);
+  const stampedStem = `${stem}-${fileTimestamp()}`;
+  let candidate = path.join(directory, `${stampedStem}${extension}`);
+  let sequence = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(
+      directory,
+      `${stampedStem}-${sequence}${extension}`
+    );
+    sequence += 1;
+  }
+  return candidate;
+}
+
 class ExportModeModal extends Modal {
   constructor(app, resolve) {
     super(app);
@@ -352,7 +380,10 @@ class FormatSettingsModal extends Modal {
 
     new Setting(contentEl)
       .setName("Word 文件名")
-      .setDesc("默认读取 Markdown 的文章一级标题；可直接修改，无需输入 .docx。")
+      .setDesc(
+        "默认读取 Markdown 的文章一级标题；可直接修改，无需输入 .docx；" +
+          "同名文件自动添加时间戳。"
+      )
       .addText((text) => {
         text.inputEl.style.width = "min(420px, 52vw)";
         text
@@ -1343,16 +1374,17 @@ catch {
       new Notice(`已保存格式方案：${formatSelection.presetName}`);
     }
 
-    const outputPath = path.join(
+    const requestedOutputPath = path.join(
       path.dirname(markdownPath),
       `${formatSelection.outputName}.docx`
     );
-    if (fs.existsSync(outputPath)) {
+    const outputPath = uniqueOutputPath(requestedOutputPath);
+    if (outputPath !== requestedOutputPath) {
       new Notice(
-        `同名 Word 已存在：${path.basename(outputPath)}。请重新导出并修改文件名。`,
-        12000
+        `同名 Word 已存在，原文件保持不变；本次另存为：` +
+          path.basename(outputPath),
+        10000
       );
-      return;
     }
 
     let output = "";

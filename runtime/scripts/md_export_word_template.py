@@ -3144,13 +3144,21 @@ def safe_output_stem(value: str, fallback: str) -> str:
     return stem or "导出文档"
 
 
-def unique_output_path(md_path: Path, document_title: str = "") -> Path:
-    output_stem = safe_output_stem(document_title, md_path.stem)
-    base = md_path.with_name(output_stem + ".docx")
-    if not base.exists():
-        return base
+def unique_output_path(requested_path: Path) -> Path:
+    if not requested_path.exists():
+        return requested_path
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return md_path.with_name(output_stem + f"-{stamp}.docx")
+    stamped_stem = f"{requested_path.stem}-{stamp}"
+    candidate = requested_path.with_name(
+        stamped_stem + requested_path.suffix
+    )
+    sequence = 2
+    while candidate.exists():
+        candidate = requested_path.with_name(
+            f"{stamped_stem}-{sequence}{requested_path.suffix}"
+        )
+        sequence += 1
+    return candidate
 
 
 def print_preflight(
@@ -3351,18 +3359,20 @@ def main() -> int:
     scripts = source_script_counts(prepared)
     emit_progress(18, "规范化 Markdown", "标题、图片、引用间距与公式标签")
     output_value = args.output or os.environ.get("MD_EXPORT_WORD_OUTPUT")
-    output_path = (
+    requested_output_path = (
         Path(output_value).expanduser().resolve()
         if output_value
-        else unique_output_path(
-            md_path,
-            str(prepare_report.get("document_title", "")),
+        else md_path.with_name(
+            safe_output_stem(
+                str(prepare_report.get("document_title", "")),
+                md_path.stem,
+            )
+            + ".docx"
         )
     )
-    if output_path.resolve() == md_path.resolve():
+    if requested_output_path.resolve() == md_path.resolve():
         raise ExportError("输出不能覆盖 Markdown")
-    if output_path.exists():
-        raise ExportError(f"输出已存在：{output_path}")
+    output_path = unique_output_path(requested_output_path)
 
     with tempfile.TemporaryDirectory(prefix="md_word_review_") as temp_name:
         temp_dir = Path(temp_name)

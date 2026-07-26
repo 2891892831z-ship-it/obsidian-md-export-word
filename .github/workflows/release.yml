@@ -90,6 +90,15 @@ jobs:
           $env:MD_EXPORT_WORD_OUTPUT = $customWord
           python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible
           if (-not (Test-Path -LiteralPath $customWord)) { throw "Custom output name was not honored" }
+          $originalHash = (Get-FileHash -LiteralPath $customWord -Algorithm SHA256).Hash
+          python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible
+          if ((Get-FileHash -LiteralPath $customWord -Algorithm SHA256).Hash -ne $originalHash) { throw "Existing Word was overwritten" }
+          $timestampedWords = @(
+            Get-ChildItem -LiteralPath "$PWD\dist" -File |
+              Where-Object { $_.Name -match '^custom-output-name-\d{8}-\d{6}(?:-\d+)?\.docx$' }
+          )
+          if ($timestampedWords.Count -ne 1) { throw "Timestamped duplicate Word was not generated exactly once" }
+          Remove-Item -LiteralPath $timestampedWords[0].FullName -Force
           Remove-Item -LiteralPath $customWord -Force
           Remove-Item Env:MD_EXPORT_WORD_OUTPUT
           $env:MD_EXPORT_WORD_FAILURE_LOG = "$PWD\dist\expected-failure.log.txt"
