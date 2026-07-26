@@ -1,4 +1,4 @@
-name: Release Obsidian plugin and Windows runtime
+name: Release Obsidian plugin and cross-platform runtimes
 
 on:
   push:
@@ -11,8 +11,8 @@ permissions:
   attestations: write
 
 jobs:
-  release:
-    runs-on: windows-latest
+  plugin:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -22,13 +22,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-
-      - name: Use Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: runtime/requirements.txt
 
       - name: Install Node dependencies
         run: npm ci
@@ -40,6 +33,30 @@ jobs:
         run: |
           npm run check
           npm run build
+
+      - name: Upload plugin assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-assets
+          if-no-files-found: error
+          path: |
+            main.js
+            manifest.json
+            styles.css
+            versions.json
+
+  runtime-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: runtime/requirements.txt
 
       - name: Download official matching binaries
         shell: pwsh
@@ -55,7 +72,7 @@ jobs:
           7z x $crossrefArchive.FullName "-ovendor\crossref" -y
 
       - name: Locate and verify binaries
-        id: binaries
+        id: windows-binaries
         shell: pwsh
         run: |
           $pandoc = Get-ChildItem -LiteralPath vendor\pandoc -Recurse -Filter pandoc.exe | Select-Object -First 1
@@ -66,74 +83,184 @@ jobs:
           "pandoc=$($pandoc.FullName)" >> $env:GITHUB_OUTPUT
           "crossref=$($crossref.FullName)" >> $env:GITHUB_OUTPUT
 
-      - name: Python smoke test
+      - name: Cross-platform exporter smoke test
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check -r runtime\requirements.txt
-          # The exporter locates the Obsidian vault root by walking up for a
-          # .obsidian directory. CI is not a real vault, so create a marker so
-          # the smoke run resolves a vault root at the repository checkout.
-          New-Item -ItemType Directory -Path .obsidian -Force | Out-Null
-          $env:MD_EXPORT_WORD_PANDOC = "${{ steps.binaries.outputs.pandoc }}"
-          $env:MD_EXPORT_WORD_CROSSREF = "${{ steps.binaries.outputs.crossref }}"
-          $env:MD_EXPORT_WORD_FAILURE_LOG = "$PWD\dist\smoke-failure.log.txt"
-          python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible --output dist\smoke.docx
-          if (-not (Test-Path -LiteralPath dist\smoke.docx)) { throw "Smoke Word was not generated" }
-          if (Test-Path -LiteralPath dist\smoke.log.txt) { throw "Success must not generate a log file" }
-          if (Test-Path -LiteralPath $env:MD_EXPORT_WORD_FAILURE_LOG) { throw "Success generated a failure log" }
-          $defaultWord = "$PWD\tests\fixtures\运行时烟雾测试.docx"
-          python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible
-          if (-not (Test-Path -LiteralPath $defaultWord)) { throw "Default article-title Word was not generated" }
-          if (Test-Path -LiteralPath "$PWD\tests\fixtures\smoke-编辑审阅稿.docx") { throw "Legacy output suffix was generated" }
-          Remove-Item -LiteralPath $defaultWord -Force
-          $customWord = "$PWD\dist\custom-output-name.docx"
-          $env:MD_EXPORT_WORD_OUTPUT = $customWord
-          python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible
-          if (-not (Test-Path -LiteralPath $customWord)) { throw "Custom output name was not honored" }
-          $originalHash = (Get-FileHash -LiteralPath $customWord -Algorithm SHA256).Hash
-          python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible
-          if ((Get-FileHash -LiteralPath $customWord -Algorithm SHA256).Hash -ne $originalHash) { throw "Existing Word was overwritten" }
-          $timestampedWords = @(
-            Get-ChildItem -LiteralPath "$PWD\dist" -File |
-              Where-Object { $_.Name -match '^custom-output-name-\d{8}-\d{6}(?:-\d+)?\.docx$' }
-          )
-          if ($timestampedWords.Count -ne 1) { throw "Timestamped duplicate Word was not generated exactly once" }
-          Remove-Item -LiteralPath $timestampedWords[0].FullName -Force
-          Remove-Item -LiteralPath $customWord -Force
-          Remove-Item Env:MD_EXPORT_WORD_OUTPUT
-          $env:MD_EXPORT_WORD_FAILURE_LOG = "$PWD\dist\expected-failure.log.txt"
-          python runtime\scripts\md_export_word_template.py tests\fixtures\failure-invalid.md --yes --no-open --mode compatible --output dist\must-not-exist.docx
-          if ($LASTEXITCODE -eq 0) { throw "Failure fixture unexpectedly succeeded" }
-          if (-not (Test-Path -LiteralPath $env:MD_EXPORT_WORD_FAILURE_LOG)) { throw "Failure log was not generated" }
-          if (Test-Path -LiteralPath dist\must-not-exist.docx) { throw "Failure generated an output Word" }
+          python scripts\smoke-runtime.py `
+            --pandoc "${{ steps.windows-binaries.outputs.pandoc }}" `
+            --crossref "${{ steps.windows-binaries.outputs.crossref }}"
 
-      - name: Build Windows runtime
+      - name: Build Windows x64 runtime
         shell: pwsh
         run: |
           .\scripts\build-runtime.ps1 `
-            -PandocExe "${{ steps.binaries.outputs.pandoc }}" `
-            -CrossrefExe "${{ steps.binaries.outputs.crossref }}"
+            -PandocExe "${{ steps.windows-binaries.outputs.pandoc }}" `
+            -CrossrefExe "${{ steps.windows-binaries.outputs.crossref }}"
+
+      - name: Verify packaged Windows runtime
+        shell: pwsh
+        run: |
+          $verifyRoot = Join-Path $PWD "dist\verify-windows-x64"
+          Expand-Archive `
+            -LiteralPath "dist\md-export-word-runtime-windows-x64.zip" `
+            -DestinationPath $verifyRoot `
+            -Force
+          python "$verifyRoot\runtime\scripts\doctor.py"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged Windows runtime doctor failed"
+          }
+          Remove-Item -LiteralPath $verifyRoot -Recurse -Force
+
+      - name: Upload Windows runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-windows-x64
+          if-no-files-found: error
+          path: |
+            dist/md-export-word-runtime-windows-x64.zip
+            dist/SHA256SUMS-windows-x64.txt
+
+  runtime-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: macos-arm64
+            expected-arch: arm64
+            pandoc-asset: pandoc-3.8.2.1-arm64-macOS.zip
+            crossref-pattern: "*macOS-ARM64*"
+          - runner: macos-15-intel
+            target: macos-x64
+            expected-arch: x86_64
+            pandoc-asset: pandoc-3.8.2.1-x86_64-macOS.zip
+            crossref-pattern: "*macOS-X64*"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: runtime/requirements.txt
+
+      - name: Verify runner architecture
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected-arch }}
+        run: |
+          set -euo pipefail
+          actual_arch="$(uname -m)"
+          echo "Runner architecture: $actual_arch"
+          test "$actual_arch" = "$EXPECTED_ARCH"
+
+      - name: Download official matching binaries
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PANDOC_ASSET: ${{ matrix.pandoc-asset }}
+          CROSSREF_PATTERN: ${{ matrix.crossref-pattern }}
+        run: |
+          set -euo pipefail
+          mkdir -p vendor/pandoc vendor/crossref
+          gh release download 3.8.2.1 \
+            --repo jgm/pandoc \
+            --pattern "$PANDOC_ASSET" \
+            --dir vendor
+          gh release download v0.3.22a \
+            --repo lierdakil/pandoc-crossref \
+            --pattern "$CROSSREF_PATTERN" \
+            --dir vendor
+          /usr/bin/ditto -x -k "vendor/$PANDOC_ASSET" vendor/pandoc
+          crossref_archive="$(find vendor -maxdepth 1 -type f -name 'pandoc-crossref-*.tar.xz' -print -quit)"
+          test -n "$crossref_archive"
+          tar -xf "$crossref_archive" -C vendor/crossref
+
+      - name: Locate and verify binaries
+        id: macos-binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          pandoc_bin="$(find vendor/pandoc -type f -name pandoc -print -quit)"
+          crossref_bin="$(find vendor/crossref -type f -name pandoc-crossref -print -quit)"
+          test -n "$pandoc_bin"
+          test -n "$crossref_bin"
+          chmod 755 "$pandoc_bin" "$crossref_bin"
+          "$pandoc_bin" --version | head -n 1
+          "$crossref_bin" --version
+          echo "pandoc=$(cd "$(dirname "$pandoc_bin")" && pwd)/$(basename "$pandoc_bin")" >> "$GITHUB_OUTPUT"
+          echo "crossref=$(cd "$(dirname "$crossref_bin")" && pwd)/$(basename "$crossref_bin")" >> "$GITHUB_OUTPUT"
+
+      - name: Cross-platform exporter smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -r runtime/requirements.txt
+          python scripts/smoke-runtime.py \
+            --pandoc "${{ steps.macos-binaries.outputs.pandoc }}" \
+            --crossref "${{ steps.macos-binaries.outputs.crossref }}"
+
+      - name: Build macOS runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 755 scripts/build-runtime.sh
+          ./scripts/build-runtime.sh \
+            "${{ matrix.target }}" \
+            "${{ steps.macos-binaries.outputs.pandoc }}" \
+            "${{ steps.macos-binaries.outputs.crossref }}"
+
+      - name: Verify packaged macOS runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_root="$PWD/dist/verify-${{ matrix.target }}"
+          /usr/bin/ditto -x -k \
+            "dist/md-export-word-runtime-${{ matrix.target }}.zip" \
+            "$verify_root"
+          python "$verify_root/runtime/scripts/doctor.py"
+          rm -rf "$verify_root"
+
+      - name: Upload macOS runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            dist/md-export-word-runtime-${{ matrix.target }}.zip
+            dist/SHA256SUMS-${{ matrix.target }}.txt
+
+  release:
+    needs:
+      - plugin
+      - runtime-windows
+      - runtime-macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Inspect release assets
+        run: find release-assets -maxdepth 1 -type f -print -exec sha256sum {} \;
 
       - name: Attest release assets
         uses: actions/attest@v4
         with:
-          subject-path: |
-            main.js
-            manifest.json
-            styles.css
-            dist/md-export-word-runtime-windows.zip
-            dist/SHA256SUMS.txt
+          subject-path: release-assets/*
 
       - name: Create draft release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" `
-            --title "${{ github.ref_name }}" `
-            --draft `
-            main.js `
-            manifest.json `
-            styles.css `
-            dist\md-export-word-runtime-windows.zip `
-            dist\SHA256SUMS.txt
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --draft \
+            release-assets/*

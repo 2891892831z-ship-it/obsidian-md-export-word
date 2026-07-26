@@ -1,13 +1,13 @@
 # BRAT 安装教程
 
-本教程用于把 MD Export Word 安装到另一台 Windows 电脑。BRAT 安装插件
-界面，插件再安装导出所需的版本匹配运行时。
+本教程用于把 MD Export Word 安装到 Windows 或 macOS 电脑。BRAT 安装
+插件界面，插件会识别当前操作系统与 CPU，并安装版本匹配的导出运行时。
 
 ## 1. 安装前检查
 
 ### 必需
 
-- Windows 10 或 Windows 11；
+- Windows 10/11 x64，或 Obsidian 1.7.2 支持的 macOS（Apple Silicon/Intel）；
 - Obsidian 桌面版 1.7.2 或更高；
 - Python 3.10 或更高；
 - 首次安装时能够访问 GitHub 和 `pypi.org`；
@@ -19,7 +19,7 @@
 - Zotero + Better BibTeX：生成并刷新 Zotero 引文；
 - LibreOffice：仅用于无 Word 环境下的预览或自动渲染，不是导出的必需条件。
 
-### 验证 Python
+### Windows：验证 Python
 
 打开 PowerShell，执行：
 
@@ -34,6 +34,26 @@ python --version
 ```
 
 版本应为 3.10 或更高。安装 Python 时建议勾选 **Add Python to PATH**。
+
+### macOS：确认芯片并验证 Python
+
+打开“终端”，执行：
+
+```bash
+uname -m
+python3 --version
+```
+
+`uname -m` 的结果对应关系：
+
+| 结果 | 运行时 |
+| --- | --- |
+| `arm64` | macOS Apple Silicon |
+| `x86_64` | macOS Intel |
+
+Python 应为 3.10 或更高。若系统没有合适版本，请安装
+[python.org 的 macOS 64-bit universal2 安装包](https://www.python.org/downloads/macos/)。
+插件会把依赖装进自身的 `.venv`，不会修改系统 Python 包。
 
 ## 2. 用 BRAT 安装插件
 
@@ -52,7 +72,7 @@ python --version
 8. 回到“已安装插件”，启用 **MD Export Word**。
 
 BRAT 1.1.0 及以后以 GitHub Release 为主要安装源。项目 Release 的标签、
-名称和 `manifest.json` 版本必须完全一致，例如都为 `1.3.0`。
+名称和 `manifest.json` 版本必须完全一致，例如都为 `1.4.0`。
 
 ## 3. 安装 Word 导出运行时
 
@@ -64,12 +84,48 @@ MD Export Word: Install or repair Word export runtime
 
 插件会依次：
 
-1. 从当前插件版本对应的 GitHub Release 下载运行时 ZIP；
-2. 解压 Python 导出器、Lua 过滤器、Word 模板；
-3. 安装版本匹配的 Pandoc 与 pandoc-crossref；
-4. 在插件目录创建 `.venv`；
-5. 在虚拟环境内安装固定版本的 `lxml`；
-6. 建立不会被更新覆盖的用户模板目录。
+1. 识别当前系统和 CPU 架构；
+2. 从当前插件版本对应的 GitHub Release 下载唯一匹配的运行时 ZIP；
+3. 校验运行时版本与平台清单；
+4. 解压 Python 导出器、Lua 过滤器、Word 模板；
+5. 安装版本匹配的 Pandoc 与 pandoc-crossref；
+6. 在插件目录创建 `.venv`；
+7. 在虚拟环境内安装固定版本的 `lxml`；
+8. 建立不会被更新覆盖的用户模板目录。
+
+自动选择规则：
+
+| 当前电脑 | 下载的 Release 资产 |
+| --- | --- |
+| Windows x64 | `md-export-word-runtime-windows-x64.zip` |
+| Apple Silicon Mac | `md-export-word-runtime-macos-arm64.zip` |
+| Intel Mac | `md-export-word-runtime-macos-x64.zip` |
+
+正常使用时不需要手工下载运行时，也不需要把 Pandoc、pandoc-crossref 或
+LibreOffice 加入 PATH。
+
+### Apple Silicon 上的 Intel 兼容模式
+
+Obsidian 原生运行时会自动选择 `macos-arm64`。只有明确使用 Intel 版
+Obsidian，或必须通过 Rosetta 运行 Intel 二进制时，才进入：
+
+```text
+设置 → MD Export Word → 运行时平台 → macOS Intel
+```
+
+选择后重新执行“Install or repair Word export runtime”。其余情况保持
+“自动检测”即可。
+
+插件安装运行时的完整步骤为：
+
+1. 下载到插件目录的临时 ZIP；
+2. 解压到临时目录；
+3. 检查 `runtime-manifest.json` 的版本和平台；
+4. 备份旧运行时；
+5. 安装新运行时并建立私有 Python 环境；
+6. 成功后删除备份；失败则恢复旧运行时。
+
+因此升级失败不会覆盖用户模板，也不会留下半套运行时。
 
 安装期间不要关闭 Obsidian。若网络较慢，下载可能需要几分钟。
 
@@ -101,7 +157,8 @@ MD Export Word: Check Word export runtime
 4. 选择严格模式或兼容模式；
 5. 选择模板并确认格式；
 6. 等待右上角完成提示；
-7. 在 Markdown 同目录查找生成的 `.docx` 和检查日志。
+7. 成功后 Word 自动打开，并保存在 Markdown 同目录；
+8. 只有失败时才会在同目录生成 `导出失败.log.txt`。
 
 ## 6. 更新
 
@@ -113,8 +170,16 @@ MD Export Word: Install or repair Word export runtime
 
 自定义模板存储在：
 
+Windows：
+
 ```text
 <知识库>\.obsidian\plugins\md-export-word\templates
+```
+
+macOS：
+
+```text
+<知识库>/.obsidian/plugins/md-export-word/templates
 ```
 
 运行时更新不会覆盖该目录。
@@ -144,3 +209,16 @@ BRAT 访问私有 GitHub 仓库需要只读 Token。为安全起见：
 4. 执行“Install or repair Word export runtime”。
 
 不要只复制仓库源代码中的 `src/`；Obsidian 加载的是编译后的 `main.js`。
+
+## 9. macOS 首次运行的安全提示
+
+正常通过插件下载的运行时会自动设置执行权限。如果 macOS 仍提示程序无法
+打开或权限不足：
+
+1. 先在 Obsidian 中执行“Install or repair Word export runtime”；
+2. 再执行“Check Word export runtime”；
+3. 不要双击 Release ZIP 内的 `pandoc`；
+4. 如果系统明确提示已阻止，在“系统设置 → 隐私与安全性”核对被阻止的程序；
+5. 仍失败时保存自检输出和 `导出失败.log.txt`，按故障排查文档处理。
+
+不要用 `sudo` 启动 Obsidian，也不要把整个知识库设置为全盘可写。

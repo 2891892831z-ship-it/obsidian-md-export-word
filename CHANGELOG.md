@@ -7,9 +7,26 @@
 
 ### Planned
 
-- 为 macOS 和 Linux 增加独立运行时；
+- 为 Linux 增加独立运行时；
 - 把遗留 UI 代码完全迁移为严格 TypeScript；
 - 增加模板可视化预览。
+
+## [1.4.0] - 2026-07-26
+
+### Added
+
+- 新增 macOS Apple Silicon（arm64）与 macOS Intel（x64）独立运行时。
+- 插件自动识别 Windows/macOS 与 CPU 架构，也可在设置中手动选择运行时。
+- 新增跨平台 Python 环境自检、macOS 安装脚本和 Finder 双击导出入口。
+- GitHub Actions 在 Windows x64、macOS arm64、macOS x64 三个平台执行
+  真实导出烟雾测试并分别构建运行时。
+
+### Changed
+
+- 插件直接调用私有 Python 导出器，不再把 Windows CMD 作为必经入口。
+- 自动打开 Word 在 Windows 使用系统文件关联，在 macOS 使用 `open`。
+- 运行时资产名称包含操作系统与 CPU 架构，避免用户下载错误版本。
+- 运行时安装采用临时目录、平台清单校验和失败回滚。
 
 ## [1.3.1] - 2026-07-26
 

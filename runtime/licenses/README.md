@@ -9,9 +9,9 @@
 | lxml | 6.0.2 | BSD-3-Clause | <https://github.com/lxml/lxml> |
 | Better BibTeX `zotero.lua` | revision 199d652 | MIT | <https://github.com/retorquere/zotero-better-bibtex> |
 
-发布工作流从上游 GitHub Release 下载与 Pandoc 版本匹配的 Windows
-二进制文件，不把这些大型二进制提交到本仓库。对应源码和完整许可证可由
-上表的官方仓库获得。`lxml` 由用户本机的 `pip` 安装，不包含在发布的
-运行时 ZIP 中。
+发布工作流从上游 GitHub Release 下载与 Pandoc 版本匹配的 Windows x64、
+macOS arm64 和 macOS x64 二进制文件，不把这些大型二进制提交到本仓库。
+对应源码和完整许可证可由上表的官方仓库获得。`lxml` 由用户本机的 `pip`
+安装，不包含在发布的运行时 ZIP 中。
 
 Better BibTeX Copyright (c) 2016 Emiliano Heyns。

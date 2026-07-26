@@ -4,8 +4,8 @@
 格式处理：真实上下标、公式与编号、图表题、表注/图注、可刷新 Zotero 引文域、
 严格/兼容引用模式，以及可保存的字体和段落方案。
 
-> 当前版本面向 Windows 桌面版 Obsidian。项目由一个轻量 Obsidian 插件和
-> 一个版本匹配的 Windows 运行时组成。
+> 当前版本支持 Windows x64、macOS Apple Silicon 和 macOS Intel 桌面版
+> Obsidian。插件会自动识别系统与 CPU 架构，并安装同版本的对应运行时。
 
 ## 主要能力
 
@@ -28,7 +28,8 @@
 
 前置条件：
 
-- Windows 10/11；
+- Windows 10/11（x64），或 Obsidian 1.7.2 支持的 macOS
+  （Apple Silicon/Intel）；
 - Obsidian 1.7.2 或更高版本；
 - Python 3.10 或更高版本；
 - 首次安装运行时需要访问 GitHub 和 Python Package Index；
@@ -47,11 +48,16 @@
 7. 打开一篇 Markdown，运行
    `MD Export Word: Export current Markdown to Word`。
 
-首次运行时，插件会从同版本 GitHub Release 下载
-`md-export-word-runtime-windows.zip`，创建独立 Python 虚拟环境并安装
-`lxml`。Pandoc 与 pandoc-crossref 使用项目固定且互相匹配的版本。
+首次运行时，插件会从同版本 GitHub Release 自动选择并下载：
 
-完整图文步骤见 [BRAT 安装教程](docs/安装与BRAT.md)。
+- `md-export-word-runtime-windows-x64.zip`；
+- `md-export-word-runtime-macos-arm64.zip`；
+- `md-export-word-runtime-macos-x64.zip`。
+
+随后创建插件私有 Python 虚拟环境并安装 `lxml`。Pandoc 与
+pandoc-crossref 使用项目固定且互相匹配的版本，不依赖系统 PATH。
+
+Windows 与 macOS 的完整步骤见 [BRAT 安装教程](docs/安装与BRAT.md)。
 
 ## 文档
 
@@ -89,14 +95,15 @@ npm run build
 ```
 
 构建后的 `main.js`、`manifest.json`、`styles.css` 是 Obsidian/BRAT 插件资产。
-Windows 运行时由 `scripts/build-runtime.ps1` 构建，不应把 `.exe` 或 ZIP
-直接提交到 Git。
+Windows 运行时由 `scripts/build-runtime.ps1` 构建；macOS Apple Silicon
+和 Intel 运行时由 `scripts/build-runtime.sh` 构建。不应把可执行文件或
+运行时 ZIP 直接提交到 Git。
 
 ## 项目状态
 
-当前是从个人科研工作流提炼出的首个可迁移版本。发布前需要把本仓库推送到
-GitHub，并按 [开发与发布](docs/开发与发布.md) 创建版本号为 `1.3.0` 的
-Release。Release 标签不要带 `v`。
+`1.4.0` 起提供 Windows x64、macOS Apple Silicon 和 macOS Intel 三套
+运行时。发布时由 GitHub Actions 在对应系统上分别执行真实导出烟雾测试，
+再生成同版本 Release 资产。Release 标签使用纯版本号，不带 `v`。
 
 ## 许可证
 

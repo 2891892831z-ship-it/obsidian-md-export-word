@@ -3,9 +3,13 @@ dist/*
 !dist/.gitkeep
 runtime/.venv/
 runtime/Pandoc&pandoc-crossref/*.exe
+runtime/Pandoc&pandoc-crossref/pandoc
+runtime/Pandoc&pandoc-crossref/pandoc-crossref
 *.log
 *.tmp
 *.bak
+__pycache__/
+*.py[cod]
 *.docx~
 ~$*
 .runtime-*
