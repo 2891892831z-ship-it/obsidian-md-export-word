@@ -1,5 +1,9 @@
 ---
 title: 运行时烟雾测试
+figureTitle: Fig.
+tableTitle: Table
+figPrefix: Fig.
+tblPrefix: Table
 ---
 
 ## 1 正文与上下标
@@ -27,3 +31,7 @@ $$ {#eq:mass-balance}
 注：该表仅用于自动回归测试。
 
 Note: This note is used only by the automated smoke test.
+
+## 4 English captions in strict mode
+
+![English figure caption](smoke-figure.svg){#fig:smoke}

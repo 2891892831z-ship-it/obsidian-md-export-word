@@ -14,7 +14,7 @@ import * as path from "node:path";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.4.0";
+const PLUGIN_VERSION = "1.4.1";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_TARGETS = Object.freeze({
@@ -677,12 +677,22 @@ class ExportProgressModal extends Modal {
     });
     this.contentEl.createEl("h4", { text: "实时过程" });
     this.logEl = this.contentEl.createEl("pre", {
-      cls: "md-export-word-progress-log"
+      cls: "md-export-word-progress-log",
+      attr: {
+        tabindex: "0",
+        "aria-label": "Word 导出实时过程，可选择并复制"
+      }
     });
     this.actionsEl = this.contentEl.createDiv({
       cls: "md-export-word-progress-actions"
     });
-    new Setting(this.actionsEl).addButton((button) =>
+    const actions = new Setting(this.actionsEl);
+    actions.addButton((button) =>
+      button
+        .setButtonText("复制当前过程")
+        .onClick(() => this.copyLogText())
+    );
+    actions.addButton((button) =>
       button.setButtonText("隐藏窗口").onClick(() => this.close())
     );
   }
@@ -750,13 +760,94 @@ class ExportProgressModal extends Modal {
     this.appendLog(normalized, isError);
   }
 
+  async copyText(text, successMessage) {
+    const value = String(text || "").trim();
+    if (!value) {
+      new Notice("当前没有可复制的日志内容。");
+      return false;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) {
+          throw new Error("系统拒绝复制操作");
+        }
+      }
+      new Notice(successMessage);
+      return true;
+    } catch (error) {
+      new Notice(`复制失败：${error.message}`, 10000);
+      return false;
+    }
+  }
+
+  async copyLogText(logPath = "") {
+    let text = this.logLines.join("\n");
+    if (logPath && fs.existsSync(logPath)) {
+      try {
+        text = fs.readFileSync(logPath, "utf8");
+      } catch {
+        // Fall back to the process text already visible in the modal.
+      }
+    }
+    return await this.copyText(
+      text,
+      logPath ? "错误日志已复制到剪贴板。" : "当前导出过程已复制。"
+    );
+  }
+
+  openLogFile(logPath) {
+    if (!logPath || !fs.existsSync(logPath)) {
+      new Notice("未找到错误日志文件。", 10000);
+      return;
+    }
+    const executable =
+      process.platform === "darwin" ? "/usr/bin/open" : "powershell.exe";
+    const args =
+      process.platform === "darwin"
+        ? [logPath]
+        : [
+            "-NoProfile",
+            "-Command",
+            "Start-Process -FilePath $args[0]",
+            logPath
+          ];
+    try {
+      const child = spawn(executable, args, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true
+      });
+      child.once("error", (error) => {
+        new Notice(`无法打开错误日志：${error.message}`, 10000);
+      });
+      child.unref();
+    } catch (error) {
+      new Notice(`无法打开错误日志：${error.message}`, 10000);
+    }
+  }
+
   complete(wordName) {
     this.updateProgress(100, "导出完成", wordName, "success");
     if (!this.actionsEl) {
       return;
     }
     this.actionsEl.empty();
-    new Setting(this.actionsEl).addButton((button) =>
+    const actions = new Setting(this.actionsEl);
+    actions.addButton((button) =>
+      button.setButtonText("复制过程").onClick(() => this.copyLogText())
+    );
+    actions.addButton((button) =>
       button
         .setButtonText("完成并关闭")
         .setCta()
@@ -778,7 +869,21 @@ class ExportProgressModal extends Modal {
       return;
     }
     this.actionsEl.empty();
-    new Setting(this.actionsEl).addButton((button) =>
+    const actions = new Setting(this.actionsEl);
+    actions.addButton((button) =>
+      button
+        .setButtonText("复制错误日志")
+        .setCta()
+        .onClick(() => this.copyLogText(logPath))
+    );
+    if (logPath) {
+      actions.addButton((button) =>
+        button
+          .setButtonText("打开日志文件")
+          .onClick(() => this.openLogFile(logPath))
+      );
+    }
+    actions.addButton((button) =>
       button
         .setButtonText("关闭")
         .setWarning()
