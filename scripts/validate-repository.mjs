@@ -30,7 +30,11 @@ const required = [
   "manifest.json",
   "styles.css",
   "runtime/scripts/MD导出Word模板.cmd",
+  "runtime/scripts/MD导出Word模板.command",
   "runtime/scripts/md_export_word_template.py",
+  "runtime/scripts/setup-runtime.sh",
+  "runtime/scripts/doctor.py",
+  "runtime/scripts/doctor.sh",
   "runtime/scripts/true_scripts.lua",
   "runtime/zotero.lua",
   "runtime/Word-Template/导出格式模板.docx",
@@ -46,7 +50,13 @@ for (const relative of required) {
 const portableSources = [
   "src/main.ts",
   "runtime/scripts/MD导出Word模板.cmd",
-  "runtime/scripts/md_export_word_template.py"
+  "runtime/scripts/MD导出Word模板.command",
+  "runtime/scripts/md_export_word_template.py",
+  "runtime/scripts/setup-runtime.sh",
+  "runtime/scripts/doctor.py",
+  "runtime/scripts/doctor.sh",
+  "scripts/build-runtime.sh",
+  "scripts/smoke-runtime.py"
 ];
 const forbidden = [
   /C:\\Users\\/i,

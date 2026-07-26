@@ -3292,6 +3292,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def open_output_document(output_path: Path) -> None:
+    if sys.platform == "win32":
+        os.startfile(output_path)  # type: ignore[attr-defined]
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(
+            ["/usr/bin/open", str(output_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
+    raise ExportError(f"当前系统不支持自动打开 Word：{sys.platform}")
+
+
 def main() -> int:
     configure_console()
     emit_progress(2, "初始化导出环境")
@@ -3299,16 +3314,20 @@ def main() -> int:
     script_dir = Path(__file__).resolve().parent
     pandoc_root = script_dir.parent
     pandoc_bin_dir = pandoc_root / "Pandoc&pandoc-crossref"
+    executable_suffix = ".exe" if os.name == "nt" else ""
     pandoc = Path(
         os.environ.get(
             "MD_EXPORT_WORD_PANDOC",
-            str(pandoc_bin_dir / "pandoc.exe"),
+            str(pandoc_bin_dir / f"pandoc{executable_suffix}"),
         )
     )
     crossref = Path(
         os.environ.get(
             "MD_EXPORT_WORD_CROSSREF",
-            str(pandoc_bin_dir / "pandoc-crossref.exe"),
+            str(
+                pandoc_bin_dir
+                / f"pandoc-crossref{executable_suffix}"
+            ),
         )
     )
     true_scripts = script_dir / "true_scripts.lua"
@@ -3538,7 +3557,7 @@ def main() -> int:
     if not args.no_open:
         emit_progress(99, "正在打开 Word", output_path.name)
         try:
-            os.startfile(output_path)  # type: ignore[attr-defined]
+            open_output_document(output_path)
         except Exception as exc:
             print(f"无法自动打开 Word：{exc}")
     emit_progress(100, "导出完成", output_path.name, level="success")

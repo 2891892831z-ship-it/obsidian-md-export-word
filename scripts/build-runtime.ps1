@@ -21,7 +21,9 @@ if (-not $outputRoot.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCa
 $pandocPath = (Resolve-Path -LiteralPath $PandocExe).Path
 $crossrefPath = (Resolve-Path -LiteralPath $CrossrefExe).Path
 $stage = Join-Path $outputRoot "runtime-package"
-$archive = Join-Path $outputRoot "md-export-word-runtime-windows.zip"
+$assetName = "md-export-word-runtime-windows-x64.zip"
+$checksumName = "SHA256SUMS-windows-x64.txt"
+$archive = Join-Path $outputRoot $assetName
 
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 if (Test-Path -LiteralPath $stage) {
@@ -35,12 +37,19 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot "runtime") -Destination $stage -Recurse
 $stageRuntime = Join-Path $stage "runtime"
 $binDir = Join-Path $stageRuntime "Pandoc&pandoc-crossref"
+if (Test-Path -LiteralPath (Join-Path $stageRuntime ".venv")) {
+    Remove-Item -LiteralPath (Join-Path $stageRuntime ".venv") -Recurse -Force
+}
+if (Test-Path -LiteralPath $binDir) {
+    Remove-Item -LiteralPath $binDir -Recurse -Force
+}
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 Copy-Item -LiteralPath $pandocPath -Destination (Join-Path $binDir "pandoc.exe")
 Copy-Item -LiteralPath $crossrefPath -Destination (Join-Path $binDir "pandoc-crossref.exe")
 
 $manifestPath = Join-Path $stageRuntime "runtime-manifest.json"
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$manifest.platform = "windows-x64"
 $hashes = [ordered]@{}
 Get-ChildItem -LiteralPath $stageRuntime -Recurse -File |
     Where-Object { $_.FullName -ne $manifestPath -and $_.FullName -notlike "*\.venv\*" } |
@@ -56,8 +65,8 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 Compress-Archive -LiteralPath $stageRuntime -DestinationPath $archive -CompressionLevel Optimal
 $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-"$archiveHash  md-export-word-runtime-windows.zip" |
-    Set-Content -LiteralPath (Join-Path $outputRoot "SHA256SUMS.txt") -Encoding ASCII
+"$archiveHash  $assetName" |
+    Set-Content -LiteralPath (Join-Path $outputRoot $checksumName) -Encoding ASCII
 
 Remove-Item -LiteralPath $stage -Recurse -Force
 Write-Output "Runtime package: $archive"

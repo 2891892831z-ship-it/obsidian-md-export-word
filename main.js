@@ -36,10 +36,41 @@ var import_obsidian = require("obsidian");
 var import_node_child_process = require("node:child_process");
 var fs = __toESM(require("node:fs"), 1);
 var path = __toESM(require("node:path"), 1);
-var PLUGIN_VERSION = "1.3.1";
-var RUNTIME_ASSET = "md-export-word-runtime-windows.zip";
+var PLUGIN_VERSION = "1.4.0";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
+var RUNTIME_TARGETS = Object.freeze({
+  "windows-x64": {
+    id: "windows-x64",
+    label: "Windows x64",
+    nodePlatform: "win32",
+    nodeArch: "x64",
+    asset: "md-export-word-runtime-windows-x64.zip",
+    pandocFile: "pandoc.exe",
+    crossrefFile: "pandoc-crossref.exe",
+    pythonParts: [".venv", "Scripts", "python.exe"]
+  },
+  "macos-arm64": {
+    id: "macos-arm64",
+    label: "macOS Apple Silicon",
+    nodePlatform: "darwin",
+    nodeArch: "arm64",
+    asset: "md-export-word-runtime-macos-arm64.zip",
+    pandocFile: "pandoc",
+    crossrefFile: "pandoc-crossref",
+    pythonParts: [".venv", "bin", "python"]
+  },
+  "macos-x64": {
+    id: "macos-x64",
+    label: "macOS Intel",
+    nodePlatform: "darwin",
+    nodeArch: "x64",
+    asset: "md-export-word-runtime-macos-x64.zip",
+    pandocFile: "pandoc",
+    crossrefFile: "pandoc-crossref",
+    pythonParts: [".venv", "bin", "python"]
+  }
+});
 var DEFAULT_TEMPLATE_FILE = "\u5BFC\u51FA\u683C\u5F0F\u6A21\u677F.docx";
 var DEFAULT_FORMAT = Object.freeze({
   preset_name: "\u5F53\u524D\u671F\u520A\u6A21\u677F",
@@ -91,6 +122,12 @@ var MARGIN_OPTIONS = {
   "2.54": "\u56DB\u8FB9 2.54 cm",
   "3": "\u56DB\u8FB9 3.00 cm"
 };
+function detectedRuntimeTargetId() {
+  const exact = Object.values(RUNTIME_TARGETS).find(
+    (target) => target.nodePlatform === process.platform && target.nodeArch === process.arch
+  );
+  return exact?.id || null;
+}
 function cloneFormat(config = DEFAULT_FORMAT) {
   return { ...DEFAULT_FORMAT, ...config };
 }
@@ -719,6 +756,23 @@ var MdExportWordSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveData(this.plugin.exportSettings);
       })
     );
+    const detectedTarget = detectedRuntimeTargetId();
+    new import_obsidian.Setting(containerEl).setName("\u8FD0\u884C\u65F6\u5E73\u53F0").setDesc(
+      "\u9ED8\u8BA4\u81EA\u52A8\u8BC6\u522B\uFF1B\u4EC5\u5728 Apple Silicon Mac \u9700\u8981\u7528 Rosetta \u8FD0\u884C Intel \u4E8C\u8FDB\u5236\u65F6\u624B\u52A8\u8C03\u6574\u3002"
+    ).addDropdown((dropdown) => {
+      dropdown.addOption(
+        "auto",
+        `\u81EA\u52A8\u68C0\u6D4B\uFF08${detectedTarget ? RUNTIME_TARGETS[detectedTarget].label : `${process.platform}/${process.arch}`}\uFF09`
+      );
+      for (const target of Object.values(RUNTIME_TARGETS)) {
+        dropdown.addOption(target.id, target.label);
+      }
+      dropdown.setValue(this.plugin.exportSettings.runtimePlatform || "auto").onChange(async (value) => {
+        this.plugin.exportSettings.runtimePlatform = value;
+        await this.plugin.saveData(this.plugin.exportSettings);
+        this.display();
+      });
+    });
     new import_obsidian.Setting(containerEl).setName("Word \u5BFC\u51FA\u8FD0\u884C\u65F6").setDesc(this.plugin.runtimeStatusText()).addButton(
       (button) => button.setButtonText("\u5B89\u88C5\u6216\u4FEE\u590D").setCta().onClick(async () => {
         await this.plugin.installRuntime();
@@ -788,6 +842,45 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
     const pluginRoot = this.getPluginRoot();
     return pluginRoot ? path.join(pluginRoot, "templates") : null;
   }
+  getRuntimeTarget() {
+    const selected = String(
+      this.exportSettings?.runtimePlatform || "auto"
+    ).trim();
+    if (selected !== "auto" && RUNTIME_TARGETS[selected]) {
+      return RUNTIME_TARGETS[selected];
+    }
+    const detected = detectedRuntimeTargetId();
+    return detected ? RUNTIME_TARGETS[detected] : null;
+  }
+  runtimeCompatibilityError(target) {
+    if (!target) {
+      return `\u5C1A\u4E0D\u652F\u6301 ${process.platform}/${process.arch}\u3002`;
+    }
+    if (target.nodePlatform !== process.platform) {
+      return `\u6240\u9009 ${target.label} \u4E0E\u5F53\u524D\u7CFB\u7EDF ${process.platform}/${process.arch} \u4E0D\u4E00\u81F4\u3002`;
+    }
+    if (target.nodeArch !== process.arch && !(process.platform === "darwin" && process.arch === "arm64" && target.nodeArch === "x64")) {
+      return `\u6240\u9009 ${target.label} \u4E0E\u5F53\u524D CPU \u67B6\u6784 ${process.arch} \u4E0D\u517C\u5BB9\u3002`;
+    }
+    return "";
+  }
+  runtimePaths(root = this.getRuntimeRoot(), target = this.getRuntimeTarget()) {
+    if (!root || !target) {
+      return null;
+    }
+    const binaryRoot = path.join(root, "Pandoc&pandoc-crossref");
+    return {
+      root,
+      target,
+      manifest: path.join(root, RUNTIME_MANIFEST),
+      exporter: path.join(root, "scripts", "md_export_word_template.py"),
+      doctor: path.join(root, "scripts", "doctor.py"),
+      pandoc: path.join(binaryRoot, target.pandocFile),
+      crossref: path.join(binaryRoot, target.crossrefFile),
+      python: path.join(root, ...target.pythonParts),
+      template: path.join(root, "Word-Template", DEFAULT_TEMPLATE_FILE)
+    };
+  }
   ensureTemplateLibrary() {
     const runtimeRoot = this.getRuntimeRoot();
     const templateRoot = this.getTemplateRoot();
@@ -823,24 +916,31 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
     if (!root) {
       return { ready: false, message: "\u5F53\u524D\u77E5\u8BC6\u5E93\u4E0D\u662F\u672C\u5730\u6587\u4EF6\u7CFB\u7EDF\u3002" };
     }
+    const target = this.getRuntimeTarget();
+    const compatibilityError = this.runtimeCompatibilityError(target);
+    if (compatibilityError) {
+      return { ready: false, message: compatibilityError };
+    }
+    const runtimePaths = this.runtimePaths(root, target);
     const required = [
-      path.join(root, RUNTIME_MANIFEST),
-      path.join(root, "scripts", "MD\u5BFC\u51FAWord\u6A21\u677F.cmd"),
-      path.join(root, "scripts", "md_export_word_template.py"),
-      path.join(root, "Pandoc&pandoc-crossref", "pandoc.exe"),
-      path.join(root, "Pandoc&pandoc-crossref", "pandoc-crossref.exe"),
-      path.join(root, "Word-Template", DEFAULT_TEMPLATE_FILE)
+      runtimePaths.manifest,
+      runtimePaths.exporter,
+      runtimePaths.doctor,
+      runtimePaths.pandoc,
+      runtimePaths.crossref,
+      runtimePaths.python,
+      runtimePaths.template
     ];
     const missing = required.filter((file) => !fs.existsSync(file));
     if (missing.length) {
       return {
         ready: false,
-        message: `\u672A\u5B89\u88C5\u6216\u4E0D\u5B8C\u6574\uFF08\u7F3A\u5C11 ${missing.length} \u4E2A\u6587\u4EF6\uFF09\u3002`
+        message: `${target.label} \u8FD0\u884C\u65F6\u672A\u5B89\u88C5\u6216\u4E0D\u5B8C\u6574\uFF08\u7F3A\u5C11 ${missing.length} \u4E2A\u6587\u4EF6\uFF09\u3002`
       };
     }
     try {
       const manifest = JSON.parse(
-        fs.readFileSync(path.join(root, RUNTIME_MANIFEST), "utf8")
+        fs.readFileSync(runtimePaths.manifest, "utf8")
       );
       if (manifest.version !== this.manifest.version) {
         return {
@@ -848,9 +948,15 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
           message: `\u8FD0\u884C\u65F6\u7248\u672C ${manifest.version || "unknown"} \u4E0E\u63D2\u4EF6\u7248\u672C ${this.manifest.version} \u4E0D\u4E00\u81F4\u3002`
         };
       }
+      if (manifest.platform !== target.id) {
+        return {
+          ready: false,
+          message: `\u5DF2\u5B89\u88C5\u8FD0\u884C\u65F6\u4E3A ${manifest.platform || "unknown"}\uFF0C\u5F53\u524D\u9700\u8981 ${target.id}\u3002`
+        };
+      }
       return {
         ready: true,
-        message: `\u5DF2\u5B89\u88C5\u8FD0\u884C\u65F6 ${manifest.version || "unknown"}\u3002`
+        message: `\u5DF2\u5B89\u88C5 ${target.label} \u8FD0\u884C\u65F6 ${manifest.version || "unknown"}\u3002`
       };
     } catch (error) {
       return { ready: false, message: `\u8FD0\u884C\u65F6\u6E05\u5355\u635F\u574F\uFF1A${error.message}` };
@@ -864,15 +970,17 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       new TextInputModal(
         this.app,
         "\u8BBE\u7F6E\u8FD0\u884C\u65F6\u4ED3\u5E93",
-        "\u63D2\u4EF6\u9700\u8981\u4ECE\u540C\u7248\u672C GitHub Release \u4E0B\u8F7D Windows \u8FD0\u884C\u65F6\u3002\u7C98\u8D34\u4F60\u5728 BRAT \u4E2D\u6DFB\u52A0\u7684\u4ED3\u5E93\u5730\u5740\u3002",
+        "\u63D2\u4EF6\u9700\u8981\u4ECE\u540C\u7248\u672C GitHub Release \u4E0B\u8F7D\u5F53\u524D\u7CFB\u7EDF\u8FD0\u884C\u65F6\u3002\u7C98\u8D34\u4F60\u5728 BRAT \u4E2D\u6DFB\u52A0\u7684\u4ED3\u5E93\u5730\u5740\u3002",
         initialValue,
         resolve
       ).open();
     });
   }
   async installRuntime() {
-    if (process.platform !== "win32") {
-      new import_obsidian.Notice("\u5F53\u524D\u8FD0\u884C\u65F6\u53EA\u652F\u6301 Windows \u684C\u9762\u7248 Obsidian\u3002", 1e4);
+    const target = this.getRuntimeTarget();
+    const compatibilityError = this.runtimeCompatibilityError(target);
+    if (compatibilityError) {
+      new import_obsidian.Notice(`\u65E0\u6CD5\u5B89\u88C5\u8FD0\u884C\u65F6\uFF1A${compatibilityError}`, 12e3);
       return false;
     }
     const pluginRoot = this.getPluginRoot();
@@ -895,99 +1003,140 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       await this.saveData(this.exportSettings);
     }
     const version = this.manifest.version || PLUGIN_VERSION;
-    const url = `https://github.com/${repository}/releases/download/${version}/${RUNTIME_ASSET}`;
-    const zipPath = path.join(pluginRoot, ".runtime-download.zip");
+    const url = `https://github.com/${repository}/releases/download/${version}/${target.asset}`;
+    const zipPath = path.join(
+      pluginRoot,
+      `.runtime-download-${target.id}.zip`
+    );
     const stagePath = path.join(pluginRoot, ".runtime-stage");
     const runtimePath = path.join(pluginRoot, "runtime");
     const backupPath = path.join(pluginRoot, ".runtime-backup");
+    let newRuntimeInstalled = false;
     try {
-      new import_obsidian.Notice(`\u6B63\u5728\u4E0B\u8F7D Word \u5BFC\u51FA\u8FD0\u884C\u65F6 ${version}\u2026`, 8e3);
+      new import_obsidian.Notice(
+        `\u6B63\u5728\u4E0B\u8F7D ${target.label} Word \u5BFC\u51FA\u8FD0\u884C\u65F6 ${version}\u2026`,
+        8e3
+      );
       const response = await (0, import_obsidian.requestUrl)({ url, method: "GET" });
       if (response.status < 200 || response.status >= 300) {
         throw new Error(`HTTP ${response.status}`);
       }
       fs.writeFileSync(zipPath, Buffer.from(response.arrayBuffer));
-      const installScript = `
-$ErrorActionPreference = 'Stop'
-$zip = $args[0]
-$plugin = $args[1]
-$stage = $args[2]
-$runtime = $args[3]
-$backup = $args[4]
-if (Test-Path -LiteralPath $stage) {
-  Remove-Item -LiteralPath $stage -Recurse -Force
-}
-if (Test-Path -LiteralPath $backup) {
-  Remove-Item -LiteralPath $backup -Recurse -Force
-}
-$hadRuntime = Test-Path -LiteralPath $runtime
-try {
-  New-Item -ItemType Directory -Path $stage -Force | Out-Null
-  Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
-  $payload = Join-Path $stage 'runtime'
-  if (-not (Test-Path -LiteralPath (Join-Path $payload 'runtime-manifest.json'))) {
-    throw '\u8FD0\u884C\u65F6\u5305\u7F3A\u5C11 runtime/runtime-manifest.json'
-  }
-  if ($hadRuntime) {
-    Move-Item -LiteralPath $runtime -Destination $backup
-  }
-  Move-Item -LiteralPath $payload -Destination $runtime
-  $setup = Join-Path $runtime 'scripts\\setup-runtime.ps1'
-  if (Test-Path -LiteralPath $setup) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setup
-    if ($LASTEXITCODE -ne 0) {
-      throw "Python \u73AF\u5883\u5B89\u88C5\u5931\u8D25\uFF1A$LASTEXITCODE"
-    }
-  }
-  if (Test-Path -LiteralPath $backup) {
-    Remove-Item -LiteralPath $backup -Recurse -Force
-  }
-  Remove-Item -LiteralPath $stage -Recurse -Force
-  Remove-Item -LiteralPath $zip -Force
-}
-catch {
-  if (Test-Path -LiteralPath $runtime) {
-    Remove-Item -LiteralPath $runtime -Recurse -Force
-  }
-  if (Test-Path -LiteralPath $backup) {
-    Move-Item -LiteralPath $backup -Destination $runtime
-  }
-  if (Test-Path -LiteralPath $stage) {
-    Remove-Item -LiteralPath $stage -Recurse -Force
-  }
-  if (Test-Path -LiteralPath $zip) {
-    Remove-Item -LiteralPath $zip -Force
-  }
-  throw
-}
-`;
-      const result = await runProcess(
+      fs.rmSync(stagePath, { recursive: true, force: true });
+      fs.rmSync(backupPath, { recursive: true, force: true });
+      fs.mkdirSync(stagePath, { recursive: true });
+      const extractResult = process.platform === "win32" ? await runProcess(
         "powershell.exe",
         [
           "-NoProfile",
           "-ExecutionPolicy",
           "Bypass",
           "-Command",
-          installScript,
+          "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
           zipPath,
-          pluginRoot,
-          stagePath,
-          runtimePath,
-          backupPath
+          stagePath
         ],
         { cwd: pluginRoot }
+      ) : await runProcess(
+        "/usr/bin/ditto",
+        ["-x", "-k", zipPath, stagePath],
+        { cwd: pluginRoot }
       );
-      if (result.code !== 0) {
-        throw new Error(result.output.trim() || `\u9000\u51FA\u4EE3\u7801 ${result.code}`);
+      if (extractResult.code !== 0) {
+        throw new Error(
+          extractResult.output.trim() || `\u89E3\u538B\u8FD0\u884C\u65F6\u5931\u8D25\uFF1A${extractResult.code}`
+        );
+      }
+      const payloadPath = path.join(stagePath, "runtime");
+      const payloadManifestPath = path.join(
+        payloadPath,
+        RUNTIME_MANIFEST
+      );
+      if (!fs.existsSync(payloadManifestPath)) {
+        throw new Error("\u8FD0\u884C\u65F6\u5305\u7F3A\u5C11 runtime/runtime-manifest.json");
+      }
+      const payloadManifest = JSON.parse(
+        fs.readFileSync(payloadManifestPath, "utf8")
+      );
+      if (payloadManifest.version !== version || payloadManifest.platform !== target.id) {
+        throw new Error(
+          `\u8FD0\u884C\u65F6\u5305\u4E0D\u5339\u914D\uFF1A\u7248\u672C ${payloadManifest.version || "unknown"}\uFF0C\u5E73\u53F0 ${payloadManifest.platform || "unknown"}`
+        );
+      }
+      if (fs.existsSync(runtimePath)) {
+        fs.renameSync(runtimePath, backupPath);
+      }
+      fs.renameSync(payloadPath, runtimePath);
+      newRuntimeInstalled = true;
+      let setupResult;
+      if (process.platform === "win32") {
+        const setupPath = path.join(
+          runtimePath,
+          "scripts",
+          "setup-runtime.ps1"
+        );
+        setupResult = await runProcess(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            setupPath
+          ],
+          { cwd: runtimePath }
+        );
+      } else {
+        const executablePaths = [
+          path.join(runtimePath, "scripts", "setup-runtime.sh"),
+          path.join(runtimePath, "scripts", "doctor.sh"),
+          path.join(runtimePath, "scripts", "MD\u5BFC\u51FAWord\u6A21\u677F.command"),
+          path.join(
+            runtimePath,
+            "Pandoc&pandoc-crossref",
+            target.pandocFile
+          ),
+          path.join(
+            runtimePath,
+            "Pandoc&pandoc-crossref",
+            target.crossrefFile
+          )
+        ];
+        for (const executablePath of executablePaths) {
+          if (fs.existsSync(executablePath)) {
+            fs.chmodSync(executablePath, 493);
+          }
+        }
+        setupResult = await runProcess(
+          "/bin/bash",
+          [path.join(runtimePath, "scripts", "setup-runtime.sh")],
+          { cwd: runtimePath }
+        );
+      }
+      if (setupResult.code !== 0) {
+        throw new Error(
+          setupResult.output.trim() || `Python \u73AF\u5883\u5B89\u88C5\u5931\u8D25\uFF1A${setupResult.code}`
+        );
       }
       const status = this.runtimeStatus();
       if (!status.ready) {
         throw new Error(status.message);
       }
       this.ensureTemplateLibrary();
+      fs.rmSync(backupPath, { recursive: true, force: true });
+      fs.rmSync(stagePath, { recursive: true, force: true });
+      fs.rmSync(zipPath, { force: true });
       new import_obsidian.Notice(`Word \u5BFC\u51FA\u8FD0\u884C\u65F6\u5B89\u88C5\u5B8C\u6210\uFF1A${status.message}`, 1e4);
       return true;
     } catch (error) {
+      if (newRuntimeInstalled) {
+        fs.rmSync(runtimePath, { recursive: true, force: true });
+      }
+      if (fs.existsSync(backupPath)) {
+        fs.renameSync(backupPath, runtimePath);
+      }
+      fs.rmSync(stagePath, { recursive: true, force: true });
+      fs.rmSync(zipPath, { force: true });
       new import_obsidian.Notice(
         `\u8FD0\u884C\u65F6\u5B89\u88C5\u5931\u8D25\uFF1A${error.message}\u3002\u8BF7\u67E5\u770B docs/\u6545\u969C\u6392\u67E5.md\u3002`,
         15e3
@@ -1002,15 +1151,22 @@ catch {
       new import_obsidian.Notice(`\u73AF\u5883\u81EA\u68C0\u672A\u901A\u8FC7\uFF1A${status.message}`, 12e3);
       return false;
     }
-    const doctor = path.join(root, "scripts", "doctor.ps1");
-    if (!fs.existsSync(doctor)) {
-      new import_obsidian.Notice("\u73AF\u5883\u81EA\u68C0\u811A\u672C\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5148\u6267\u884C\u201C\u5B89\u88C5\u6216\u4FEE\u590D\u8FD0\u884C\u65F6\u201D\u3002");
+    const runtimePaths = this.runtimePaths(root);
+    if (!runtimePaths || !fs.existsSync(runtimePaths.doctor) || !fs.existsSync(runtimePaths.python)) {
+      new import_obsidian.Notice("\u8DE8\u5E73\u53F0\u73AF\u5883\u81EA\u68C0\u7A0B\u5E8F\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5148\u5B89\u88C5\u6216\u4FEE\u590D\u8FD0\u884C\u65F6\u3002");
       return false;
     }
     const result = await runProcess(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", doctor],
-      { cwd: root }
+      runtimePaths.python,
+      ["-B", runtimePaths.doctor],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          PYTHONUTF8: "1",
+          PYTHONDONTWRITEBYTECODE: "1"
+        }
+      }
     );
     const summary = result.output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).slice(-6).join("\uFF1B");
     new import_obsidian.Notice(
@@ -1045,7 +1201,7 @@ catch {
     }
     const adapter = this.app.vault.adapter;
     if (typeof adapter.getBasePath !== "function") {
-      new import_obsidian.Notice("\u5F53\u524D\u77E5\u8BC6\u5E93\u4E0D\u662F\u672C\u5730\u6587\u4EF6\u7CFB\u7EDF\uFF0C\u65E0\u6CD5\u8C03\u7528 CMD\u3002");
+      new import_obsidian.Notice("\u5F53\u524D\u77E5\u8BC6\u5E93\u4E0D\u662F\u672C\u5730\u6587\u4EF6\u7CFB\u7EDF\uFF0C\u65E0\u6CD5\u542F\u52A8\u672C\u5730\u5BFC\u51FA\u7A0B\u5E8F\u3002");
       return;
     }
     const vaultPath = adapter.getBasePath();
@@ -1074,18 +1230,14 @@ catch {
       }
     }
     const pandocRoot = this.getRuntimeRoot();
-    const commandPath = path.join(
-      pandocRoot,
-      "scripts",
-      "MD\u5BFC\u51FAWord\u6A21\u677F.cmd"
-    );
+    const runtimePaths = this.runtimePaths(pandocRoot);
     const templateDir = this.ensureTemplateLibrary();
     if (!templateDir) {
       new import_obsidian.Notice("\u65E0\u6CD5\u521B\u5EFA\u7528\u6237\u6A21\u677F\u76EE\u5F55\u3002");
       return;
     }
-    if (!fs.existsSync(commandPath)) {
-      new import_obsidian.Notice(`\u672A\u627E\u5230\u5BFC\u51FA\u7A0B\u5E8F\uFF1A${commandPath}`);
+    if (!runtimePaths || !fs.existsSync(runtimePaths.python) || !fs.existsSync(runtimePaths.exporter)) {
+      new import_obsidian.Notice("\u672A\u627E\u5230\u5F53\u524D\u7CFB\u7EDF\u7684 Python \u5BFC\u51FA\u7A0B\u5E8F\uFF0C\u8BF7\u5B89\u88C5\u6216\u4FEE\u590D\u8FD0\u884C\u65F6\u3002");
       return;
     }
     let templateFiles = [];
@@ -1156,20 +1308,34 @@ catch {
       "\u542F\u52A8\u5BFC\u51FA\u7A0B\u5E8F",
       `${exportMode === "strict" ? "\u4E25\u683C\u6A21\u5F0F" : "\u517C\u5BB9\u6A21\u5F0F"} \xB7 ` + formatSelection.displayName
     );
+    const exporterArgs = [
+      "-B",
+      runtimePaths.exporter,
+      markdownPath,
+      "--yes",
+      "--mode",
+      exportMode
+    ];
+    if (this.exportSettings.autoOpen === false) {
+      exporterArgs.push("--no-open");
+    }
     const child = (0, import_node_child_process.spawn)(
-      "cmd.exe",
-      ["/d", "/c", "call", commandPath, markdownPath],
+      runtimePaths.python,
+      exporterArgs,
       {
-        cwd: path.dirname(commandPath),
+        cwd: path.dirname(runtimePaths.exporter),
         env: {
           ...process.env,
-          MD_EXPORT_WORD_NONINTERACTIVE: "1",
-          MD_EXPORT_WORD_AUTO_OPEN: this.exportSettings.autoOpen === false ? "0" : "1",
+          PYTHONUTF8: "1",
+          PYTHONDONTWRITEBYTECODE: "1",
+          PYTHONUNBUFFERED: "1",
           MD_EXPORT_WORD_FAILURE_LOG: failureLogPath,
           MD_EXPORT_WORD_OUTPUT: outputPath,
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
-          MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config)
+          MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config),
+          MD_EXPORT_WORD_PANDOC: runtimePaths.pandoc,
+          MD_EXPORT_WORD_CROSSREF: runtimePaths.crossref
         },
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]

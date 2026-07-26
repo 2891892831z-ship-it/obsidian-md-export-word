@@ -14,10 +14,41 @@ import * as path from "node:path";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.3.1";
-const RUNTIME_ASSET = "md-export-word-runtime-windows.zip";
+const PLUGIN_VERSION = "1.4.0";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
+const RUNTIME_TARGETS = Object.freeze({
+  "windows-x64": {
+    id: "windows-x64",
+    label: "Windows x64",
+    nodePlatform: "win32",
+    nodeArch: "x64",
+    asset: "md-export-word-runtime-windows-x64.zip",
+    pandocFile: "pandoc.exe",
+    crossrefFile: "pandoc-crossref.exe",
+    pythonParts: [".venv", "Scripts", "python.exe"]
+  },
+  "macos-arm64": {
+    id: "macos-arm64",
+    label: "macOS Apple Silicon",
+    nodePlatform: "darwin",
+    nodeArch: "arm64",
+    asset: "md-export-word-runtime-macos-arm64.zip",
+    pandocFile: "pandoc",
+    crossrefFile: "pandoc-crossref",
+    pythonParts: [".venv", "bin", "python"]
+  },
+  "macos-x64": {
+    id: "macos-x64",
+    label: "macOS Intel",
+    nodePlatform: "darwin",
+    nodeArch: "x64",
+    asset: "md-export-word-runtime-macos-x64.zip",
+    pandocFile: "pandoc",
+    crossrefFile: "pandoc-crossref",
+    pythonParts: [".venv", "bin", "python"]
+  }
+});
 
 const DEFAULT_TEMPLATE_FILE = "导出格式模板.docx";
 const DEFAULT_FORMAT = Object.freeze({
@@ -74,6 +105,15 @@ const MARGIN_OPTIONS = {
   "2.54": "四边 2.54 cm",
   "3": "四边 3.00 cm"
 };
+
+function detectedRuntimeTargetId() {
+  const exact = Object.values(RUNTIME_TARGETS).find(
+    (target) =>
+      target.nodePlatform === process.platform &&
+      target.nodeArch === process.arch
+  );
+  return exact?.id || null;
+}
 
 function cloneFormat(config = DEFAULT_FORMAT) {
   return { ...DEFAULT_FORMAT, ...config };
@@ -907,6 +947,34 @@ class MdExportWordSettingTab extends PluginSettingTab {
           })
       );
 
+    const detectedTarget = detectedRuntimeTargetId();
+    new Setting(containerEl)
+      .setName("运行时平台")
+      .setDesc(
+        "默认自动识别；仅在 Apple Silicon Mac 需要用 Rosetta 运行 Intel " +
+          "二进制时手动调整。"
+      )
+      .addDropdown((dropdown) => {
+        dropdown.addOption(
+          "auto",
+          `自动检测（${
+            detectedTarget
+              ? RUNTIME_TARGETS[detectedTarget].label
+              : `${process.platform}/${process.arch}`
+          }）`
+        );
+        for (const target of Object.values(RUNTIME_TARGETS)) {
+          dropdown.addOption(target.id, target.label);
+        }
+        dropdown
+          .setValue(this.plugin.exportSettings.runtimePlatform || "auto")
+          .onChange(async (value) => {
+            this.plugin.exportSettings.runtimePlatform = value;
+            await this.plugin.saveData(this.plugin.exportSettings);
+            this.display();
+          });
+      });
+
     new Setting(containerEl)
       .setName("Word 导出运行时")
       .setDesc(this.plugin.runtimeStatusText())
@@ -996,6 +1064,60 @@ export default class MdExportWordPlugin extends Plugin {
     return pluginRoot ? path.join(pluginRoot, "templates") : null;
   }
 
+  getRuntimeTarget() {
+    const selected = String(
+      this.exportSettings?.runtimePlatform || "auto"
+    ).trim();
+    if (selected !== "auto" && RUNTIME_TARGETS[selected]) {
+      return RUNTIME_TARGETS[selected];
+    }
+    const detected = detectedRuntimeTargetId();
+    return detected ? RUNTIME_TARGETS[detected] : null;
+  }
+
+  runtimeCompatibilityError(target) {
+    if (!target) {
+      return `尚不支持 ${process.platform}/${process.arch}。`;
+    }
+    if (target.nodePlatform !== process.platform) {
+      return (
+        `所选 ${target.label} 与当前系统 ${process.platform}/${process.arch} ` +
+        "不一致。"
+      );
+    }
+    if (
+      target.nodeArch !== process.arch &&
+      !(
+        process.platform === "darwin" &&
+        process.arch === "arm64" &&
+        target.nodeArch === "x64"
+      )
+    ) {
+      return (
+        `所选 ${target.label} 与当前 CPU 架构 ${process.arch} 不兼容。`
+      );
+    }
+    return "";
+  }
+
+  runtimePaths(root = this.getRuntimeRoot(), target = this.getRuntimeTarget()) {
+    if (!root || !target) {
+      return null;
+    }
+    const binaryRoot = path.join(root, "Pandoc&pandoc-crossref");
+    return {
+      root,
+      target,
+      manifest: path.join(root, RUNTIME_MANIFEST),
+      exporter: path.join(root, "scripts", "md_export_word_template.py"),
+      doctor: path.join(root, "scripts", "doctor.py"),
+      pandoc: path.join(binaryRoot, target.pandocFile),
+      crossref: path.join(binaryRoot, target.crossrefFile),
+      python: path.join(root, ...target.pythonParts),
+      template: path.join(root, "Word-Template", DEFAULT_TEMPLATE_FILE)
+    };
+  }
+
   ensureTemplateLibrary() {
     const runtimeRoot = this.getRuntimeRoot();
     const templateRoot = this.getTemplateRoot();
@@ -1035,24 +1157,33 @@ export default class MdExportWordPlugin extends Plugin {
     if (!root) {
       return { ready: false, message: "当前知识库不是本地文件系统。" };
     }
+    const target = this.getRuntimeTarget();
+    const compatibilityError = this.runtimeCompatibilityError(target);
+    if (compatibilityError) {
+      return { ready: false, message: compatibilityError };
+    }
+    const runtimePaths = this.runtimePaths(root, target);
     const required = [
-      path.join(root, RUNTIME_MANIFEST),
-      path.join(root, "scripts", "MD导出Word模板.cmd"),
-      path.join(root, "scripts", "md_export_word_template.py"),
-      path.join(root, "Pandoc&pandoc-crossref", "pandoc.exe"),
-      path.join(root, "Pandoc&pandoc-crossref", "pandoc-crossref.exe"),
-      path.join(root, "Word-Template", DEFAULT_TEMPLATE_FILE)
+      runtimePaths.manifest,
+      runtimePaths.exporter,
+      runtimePaths.doctor,
+      runtimePaths.pandoc,
+      runtimePaths.crossref,
+      runtimePaths.python,
+      runtimePaths.template
     ];
     const missing = required.filter((file) => !fs.existsSync(file));
     if (missing.length) {
       return {
         ready: false,
-        message: `未安装或不完整（缺少 ${missing.length} 个文件）。`
+        message:
+          `${target.label} 运行时未安装或不完整` +
+          `（缺少 ${missing.length} 个文件）。`
       };
     }
     try {
       const manifest = JSON.parse(
-        fs.readFileSync(path.join(root, RUNTIME_MANIFEST), "utf8")
+        fs.readFileSync(runtimePaths.manifest, "utf8")
       );
       if (manifest.version !== this.manifest.version) {
         return {
@@ -1062,9 +1193,19 @@ export default class MdExportWordPlugin extends Plugin {
             `${this.manifest.version} 不一致。`
         };
       }
+      if (manifest.platform !== target.id) {
+        return {
+          ready: false,
+          message:
+            `已安装运行时为 ${manifest.platform || "unknown"}，当前需要 ` +
+            `${target.id}。`
+        };
+      }
       return {
         ready: true,
-        message: `已安装运行时 ${manifest.version || "unknown"}。`
+        message:
+          `已安装 ${target.label} 运行时 ` +
+          `${manifest.version || "unknown"}。`
       };
     } catch (error) {
       return { ready: false, message: `运行时清单损坏：${error.message}` };
@@ -1080,7 +1221,7 @@ export default class MdExportWordPlugin extends Plugin {
       new TextInputModal(
         this.app,
         "设置运行时仓库",
-        "插件需要从同版本 GitHub Release 下载 Windows 运行时。粘贴你在 BRAT 中添加的仓库地址。",
+        "插件需要从同版本 GitHub Release 下载当前系统运行时。粘贴你在 BRAT 中添加的仓库地址。",
         initialValue,
         resolve
       ).open();
@@ -1088,8 +1229,10 @@ export default class MdExportWordPlugin extends Plugin {
   }
 
   async installRuntime() {
-    if (process.platform !== "win32") {
-      new Notice("当前运行时只支持 Windows 桌面版 Obsidian。", 10000);
+    const target = this.getRuntimeTarget();
+    const compatibilityError = this.runtimeCompatibilityError(target);
+    if (compatibilityError) {
+      new Notice(`无法安装运行时：${compatibilityError}`, 12000);
       return false;
     }
     const pluginRoot = this.getPluginRoot();
@@ -1116,102 +1259,157 @@ export default class MdExportWordPlugin extends Plugin {
     const version = this.manifest.version || PLUGIN_VERSION;
     const url =
       `https://github.com/${repository}/releases/download/` +
-      `${version}/${RUNTIME_ASSET}`;
-    const zipPath = path.join(pluginRoot, ".runtime-download.zip");
+      `${version}/${target.asset}`;
+    const zipPath = path.join(
+      pluginRoot,
+      `.runtime-download-${target.id}.zip`
+    );
     const stagePath = path.join(pluginRoot, ".runtime-stage");
     const runtimePath = path.join(pluginRoot, "runtime");
     const backupPath = path.join(pluginRoot, ".runtime-backup");
+    let newRuntimeInstalled = false;
 
     try {
-      new Notice(`正在下载 Word 导出运行时 ${version}…`, 8000);
+      new Notice(
+        `正在下载 ${target.label} Word 导出运行时 ${version}…`,
+        8000
+      );
       const response = await requestUrl({ url, method: "GET" });
       if (response.status < 200 || response.status >= 300) {
         throw new Error(`HTTP ${response.status}`);
       }
       fs.writeFileSync(zipPath, Buffer.from(response.arrayBuffer));
 
-      const installScript = `
-$ErrorActionPreference = 'Stop'
-$zip = $args[0]
-$plugin = $args[1]
-$stage = $args[2]
-$runtime = $args[3]
-$backup = $args[4]
-if (Test-Path -LiteralPath $stage) {
-  Remove-Item -LiteralPath $stage -Recurse -Force
-}
-if (Test-Path -LiteralPath $backup) {
-  Remove-Item -LiteralPath $backup -Recurse -Force
-}
-$hadRuntime = Test-Path -LiteralPath $runtime
-try {
-  New-Item -ItemType Directory -Path $stage -Force | Out-Null
-  Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
-  $payload = Join-Path $stage 'runtime'
-  if (-not (Test-Path -LiteralPath (Join-Path $payload 'runtime-manifest.json'))) {
-    throw '运行时包缺少 runtime/runtime-manifest.json'
-  }
-  if ($hadRuntime) {
-    Move-Item -LiteralPath $runtime -Destination $backup
-  }
-  Move-Item -LiteralPath $payload -Destination $runtime
-  $setup = Join-Path $runtime 'scripts\\setup-runtime.ps1'
-  if (Test-Path -LiteralPath $setup) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setup
-    if ($LASTEXITCODE -ne 0) {
-      throw "Python 环境安装失败：$LASTEXITCODE"
-    }
-  }
-  if (Test-Path -LiteralPath $backup) {
-    Remove-Item -LiteralPath $backup -Recurse -Force
-  }
-  Remove-Item -LiteralPath $stage -Recurse -Force
-  Remove-Item -LiteralPath $zip -Force
-}
-catch {
-  if (Test-Path -LiteralPath $runtime) {
-    Remove-Item -LiteralPath $runtime -Recurse -Force
-  }
-  if (Test-Path -LiteralPath $backup) {
-    Move-Item -LiteralPath $backup -Destination $runtime
-  }
-  if (Test-Path -LiteralPath $stage) {
-    Remove-Item -LiteralPath $stage -Recurse -Force
-  }
-  if (Test-Path -LiteralPath $zip) {
-    Remove-Item -LiteralPath $zip -Force
-  }
-  throw
-}
-`;
+      fs.rmSync(stagePath, { recursive: true, force: true });
+      fs.rmSync(backupPath, { recursive: true, force: true });
+      fs.mkdirSync(stagePath, { recursive: true });
 
-      const result = await runProcess(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          installScript,
-          zipPath,
-          pluginRoot,
-          stagePath,
-          runtimePath,
-          backupPath
-        ],
-        { cwd: pluginRoot }
-      );
-      if (result.code !== 0) {
-        throw new Error(result.output.trim() || `退出代码 ${result.code}`);
+      const extractResult =
+        process.platform === "win32"
+          ? await runProcess(
+              "powershell.exe",
+              [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Expand-Archive -LiteralPath $args[0] " +
+                  "-DestinationPath $args[1] -Force",
+                zipPath,
+                stagePath
+              ],
+              { cwd: pluginRoot }
+            )
+          : await runProcess(
+              "/usr/bin/ditto",
+              ["-x", "-k", zipPath, stagePath],
+              { cwd: pluginRoot }
+            );
+      if (extractResult.code !== 0) {
+        throw new Error(
+          extractResult.output.trim() ||
+            `解压运行时失败：${extractResult.code}`
+        );
       }
+
+      const payloadPath = path.join(stagePath, "runtime");
+      const payloadManifestPath = path.join(
+        payloadPath,
+        RUNTIME_MANIFEST
+      );
+      if (!fs.existsSync(payloadManifestPath)) {
+        throw new Error("运行时包缺少 runtime/runtime-manifest.json");
+      }
+      const payloadManifest = JSON.parse(
+        fs.readFileSync(payloadManifestPath, "utf8")
+      );
+      if (
+        payloadManifest.version !== version ||
+        payloadManifest.platform !== target.id
+      ) {
+        throw new Error(
+          `运行时包不匹配：版本 ${payloadManifest.version || "unknown"}，` +
+            `平台 ${payloadManifest.platform || "unknown"}`
+        );
+      }
+
+      if (fs.existsSync(runtimePath)) {
+        fs.renameSync(runtimePath, backupPath);
+      }
+      fs.renameSync(payloadPath, runtimePath);
+      newRuntimeInstalled = true;
+
+      let setupResult;
+      if (process.platform === "win32") {
+        const setupPath = path.join(
+          runtimePath,
+          "scripts",
+          "setup-runtime.ps1"
+        );
+        setupResult = await runProcess(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            setupPath
+          ],
+          { cwd: runtimePath }
+        );
+      } else {
+        const executablePaths = [
+          path.join(runtimePath, "scripts", "setup-runtime.sh"),
+          path.join(runtimePath, "scripts", "doctor.sh"),
+          path.join(runtimePath, "scripts", "MD导出Word模板.command"),
+          path.join(
+            runtimePath,
+            "Pandoc&pandoc-crossref",
+            target.pandocFile
+          ),
+          path.join(
+            runtimePath,
+            "Pandoc&pandoc-crossref",
+            target.crossrefFile
+          )
+        ];
+        for (const executablePath of executablePaths) {
+          if (fs.existsSync(executablePath)) {
+            fs.chmodSync(executablePath, 0o755);
+          }
+        }
+        setupResult = await runProcess(
+          "/bin/bash",
+          [path.join(runtimePath, "scripts", "setup-runtime.sh")],
+          { cwd: runtimePath }
+        );
+      }
+      if (setupResult.code !== 0) {
+        throw new Error(
+          setupResult.output.trim() ||
+            `Python 环境安装失败：${setupResult.code}`
+        );
+      }
+
       const status = this.runtimeStatus();
       if (!status.ready) {
         throw new Error(status.message);
       }
       this.ensureTemplateLibrary();
+      fs.rmSync(backupPath, { recursive: true, force: true });
+      fs.rmSync(stagePath, { recursive: true, force: true });
+      fs.rmSync(zipPath, { force: true });
       new Notice(`Word 导出运行时安装完成：${status.message}`, 10000);
       return true;
     } catch (error) {
+      if (newRuntimeInstalled) {
+        fs.rmSync(runtimePath, { recursive: true, force: true });
+      }
+      if (fs.existsSync(backupPath)) {
+        fs.renameSync(backupPath, runtimePath);
+      }
+      fs.rmSync(stagePath, { recursive: true, force: true });
+      fs.rmSync(zipPath, { force: true });
       new Notice(
         `运行时安装失败：${error.message}。请查看 docs/故障排查.md。`,
         15000
@@ -1227,15 +1425,26 @@ catch {
       new Notice(`环境自检未通过：${status.message}`, 12000);
       return false;
     }
-    const doctor = path.join(root, "scripts", "doctor.ps1");
-    if (!fs.existsSync(doctor)) {
-      new Notice("环境自检脚本不存在，请先执行“安装或修复运行时”。");
+    const runtimePaths = this.runtimePaths(root);
+    if (
+      !runtimePaths ||
+      !fs.existsSync(runtimePaths.doctor) ||
+      !fs.existsSync(runtimePaths.python)
+    ) {
+      new Notice("跨平台环境自检程序不存在，请先安装或修复运行时。");
       return false;
     }
     const result = await runProcess(
-      "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", doctor],
-      { cwd: root }
+      runtimePaths.python,
+      ["-B", runtimePaths.doctor],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          PYTHONUTF8: "1",
+          PYTHONDONTWRITEBYTECODE: "1"
+        }
+      }
     );
     const summary = result.output
       .split(/\r?\n/)
@@ -1281,7 +1490,7 @@ catch {
 
     const adapter = this.app.vault.adapter;
     if (typeof adapter.getBasePath !== "function") {
-      new Notice("当前知识库不是本地文件系统，无法调用 CMD。");
+      new Notice("当前知识库不是本地文件系统，无法启动本地导出程序。");
       return;
     }
 
@@ -1312,19 +1521,19 @@ catch {
     }
 
     const pandocRoot = this.getRuntimeRoot();
-    const commandPath = path.join(
-      pandocRoot,
-      "scripts",
-      "MD导出Word模板.cmd"
-    );
+    const runtimePaths = this.runtimePaths(pandocRoot);
     const templateDir = this.ensureTemplateLibrary();
     if (!templateDir) {
       new Notice("无法创建用户模板目录。");
       return;
     }
 
-    if (!fs.existsSync(commandPath)) {
-      new Notice(`未找到导出程序：${commandPath}`);
+    if (
+      !runtimePaths ||
+      !fs.existsSync(runtimePaths.python) ||
+      !fs.existsSync(runtimePaths.exporter)
+    ) {
+      new Notice("未找到当前系统的 Python 导出程序，请安装或修复运行时。");
       return;
     }
 
@@ -1408,21 +1617,34 @@ catch {
       `${exportMode === "strict" ? "严格模式" : "兼容模式"} · ` +
         formatSelection.displayName
     );
+    const exporterArgs = [
+      "-B",
+      runtimePaths.exporter,
+      markdownPath,
+      "--yes",
+      "--mode",
+      exportMode
+    ];
+    if (this.exportSettings.autoOpen === false) {
+      exporterArgs.push("--no-open");
+    }
     const child = spawn(
-      "cmd.exe",
-      ["/d", "/c", "call", commandPath, markdownPath],
+      runtimePaths.python,
+      exporterArgs,
       {
-        cwd: path.dirname(commandPath),
+        cwd: path.dirname(runtimePaths.exporter),
         env: {
           ...process.env,
-          MD_EXPORT_WORD_NONINTERACTIVE: "1",
-          MD_EXPORT_WORD_AUTO_OPEN:
-            this.exportSettings.autoOpen === false ? "0" : "1",
+          PYTHONUTF8: "1",
+          PYTHONDONTWRITEBYTECODE: "1",
+          PYTHONUNBUFFERED: "1",
           MD_EXPORT_WORD_FAILURE_LOG: failureLogPath,
           MD_EXPORT_WORD_OUTPUT: outputPath,
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
-          MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config)
+          MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config),
+          MD_EXPORT_WORD_PANDOC: runtimePaths.pandoc,
+          MD_EXPORT_WORD_CROSSREF: runtimePaths.crossref
         },
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]
