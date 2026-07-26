@@ -36,7 +36,7 @@ var import_obsidian = require("obsidian");
 var import_node_child_process = require("node:child_process");
 var fs = __toESM(require("node:fs"), 1);
 var path = __toESM(require("node:path"), 1);
-var PLUGIN_VERSION = "1.3.0";
+var PLUGIN_VERSION = "1.3.1";
 var RUNTIME_ASSET = "md-export-word-runtime-windows.zip";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
@@ -97,6 +97,69 @@ function cloneFormat(config = DEFAULT_FORMAT) {
 function formatSummary(config) {
   return `\u4E2D\u6587 ${config.east_asia_font}\uFF1B\u82F1\u6587/\u6570\u5B57 ${config.western_font}\uFF1B\u6B63\u6587 ${config.body_size_pt} pt\u3001${config.body_line_spacing} \u500D\u884C\u8DDD\u3001\u9996\u884C ${config.body_first_line_chars} \u5B57\uFF1B\u8868\u683C ${config.table_size_pt} pt\u3001${config.table_line_spacing} \u500D\u884C\u8DDD\uFF1B\u56FE\u8868\u9898 ${config.caption_size_pt} pt\uFF1B\u56FE\u8868\u6CE8 ${config.note_size_pt} pt\uFF1BA4 \u56DB\u8FB9 ${config.margin_cm} cm`;
 }
+function visibleMarkdownHeading(text) {
+  return String(text || "").trim().replace(/\s+#+\s*$/, "").replace(/[*_`~]/g, "").trim();
+}
+function markdownArticleTitle(source, fallback) {
+  const lines = String(source || "").split(/\r?\n/);
+  let bodyStart = 0;
+  let metadataTitle = "";
+  if (lines[0]?.trim() === "---") {
+    const frontmatterEnd = lines.slice(1).findIndex((line) => line.trim() === "---");
+    if (frontmatterEnd >= 0) {
+      bodyStart = frontmatterEnd + 2;
+      for (const line of lines.slice(1, bodyStart - 1)) {
+        const match = line.match(/^\s*title\s*:\s*(.*?)\s*$/i);
+        if (match && !["", "|", ">", "|-", ">-"].includes(match[1].trim())) {
+          metadataTitle = match[1].trim().replace(/^["']|["']$/g, "");
+          break;
+        }
+      }
+    }
+  }
+  for (const line of lines.slice(bodyStart)) {
+    const match = line.match(/^\s*#\s+(.+?)\s*$/);
+    if (match) {
+      const title = visibleMarkdownHeading(match[1]);
+      if (title) {
+        return title;
+      }
+    }
+  }
+  return metadataTitle || String(fallback || "").trim();
+}
+function isInvalidWindowsFileNameCharacter(character) {
+  return character.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(character);
+}
+function normalizeOutputBaseName(value) {
+  const outputName = String(value || "").trim().replace(/\.docx$/i, "").trim();
+  if (!outputName) {
+    return { error: "Word \u6587\u4EF6\u540D\u4E0D\u80FD\u4E3A\u7A7A\u3002" };
+  }
+  if ([...outputName].some(isInvalidWindowsFileNameCharacter)) {
+    return {
+      error: 'Word \u6587\u4EF6\u540D\u4E0D\u80FD\u5305\u542B < > : " / \\ | ? * \u7B49\u5B57\u7B26\u3002'
+    };
+  }
+  if (/[. ]$/.test(outputName)) {
+    return { error: "Word \u6587\u4EF6\u540D\u4E0D\u80FD\u4EE5\u53E5\u70B9\u6216\u7A7A\u683C\u7ED3\u5C3E\u3002" };
+  }
+  if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(outputName)) {
+    return { error: `\u201C${outputName}\u201D\u662F Windows \u4FDD\u7559\u6587\u4EF6\u540D\uFF0C\u8BF7\u66F4\u6362\u3002` };
+  }
+  return { value: outputName };
+}
+function safeDefaultOutputBaseName(value, fallback) {
+  const clean = String(value || "").trim().replace(/\.docx$/i, "").split("").map(
+    (character) => isInvalidWindowsFileNameCharacter(character) ? "-" : character
+  ).join("").replace(/[. ]+$/g, "").trim();
+  const result = normalizeOutputBaseName(clean);
+  if (result.value) {
+    return result.value;
+  }
+  const fallbackResult = normalizeOutputBaseName(fallback);
+  return fallbackResult.value || "\u5BFC\u51FA\u6587\u6863";
+}
 var ExportModeModal = class extends import_obsidian.Modal {
   constructor(app, resolve) {
     super(app);
@@ -145,6 +208,7 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
     this.config = cloneFormat();
     this.templateFile = this.templateFiles.includes(DEFAULT_TEMPLATE_FILE) ? DEFAULT_TEMPLATE_FILE : this.templateFiles[0];
     this.presetName = "";
+    this.outputName = options.outputName || "\u5BFC\u51FA\u6587\u6863";
   }
   usePreset(value) {
     this.selectedPreset = value;
@@ -162,6 +226,11 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
     this.render();
   }
   finish({ useDefault = false, savePreset = false } = {}) {
+    const normalizedOutput = normalizeOutputBaseName(this.outputName);
+    if (!normalizedOutput.value) {
+      new import_obsidian.Notice(normalizedOutput.error);
+      return;
+    }
     const config = useDefault ? cloneFormat() : cloneFormat(this.config);
     const templateFile = useDefault ? this.templateFiles.includes(DEFAULT_TEMPLATE_FILE) ? DEFAULT_TEMPLATE_FILE : this.templateFiles[0] : this.templateFile;
     const requestedName = this.presetName.trim();
@@ -181,7 +250,8 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
       templateFile,
       savePreset,
       presetName: requestedName,
-      displayName
+      displayName,
+      outputName: normalizedOutput.value
     });
   }
   addDropdown(container, name, desc, key, options) {
@@ -207,6 +277,12 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
     contentEl.createEl("h2", { text: "\u8BBE\u7F6E Word \u5BFC\u51FA\u683C\u5F0F" });
     contentEl.createEl("p", {
       text: "\u4E0D\u4FEE\u6539\u4EFB\u4F55\u9009\u9879\u65F6\u4F7F\u7528\u5F53\u524D\u671F\u520A\u6A21\u677F\uFF08" + formatSummary(DEFAULT_FORMAT) + "\uFF09\u3002"
+    });
+    new import_obsidian.Setting(contentEl).setName("Word \u6587\u4EF6\u540D").setDesc("\u9ED8\u8BA4\u8BFB\u53D6 Markdown \u7684\u6587\u7AE0\u4E00\u7EA7\u6807\u9898\uFF1B\u53EF\u76F4\u63A5\u4FEE\u6539\uFF0C\u65E0\u9700\u8F93\u5165 .docx\u3002").addText((text) => {
+      text.inputEl.style.width = "min(420px, 52vw)";
+      text.setPlaceholder("\u8BF7\u8F93\u5165 Word \u6587\u4EF6\u540D").setValue(this.outputName).onChange((value) => {
+        this.outputName = value;
+      });
     });
     new import_obsidian.Setting(contentEl).setName("\u683C\u5F0F\u65B9\u6848").setDesc("\u53EF\u8C03\u7528\u4E4B\u524D\u4FDD\u5B58\u7684\u6BD5\u4E1A\u8BBA\u6587\u6216\u5176\u4ED6\u671F\u520A\u65B9\u6848\u3002").addDropdown((dropdown) => {
       dropdown.addOption("__default__", "\u5F53\u524D\u671F\u520A\u6A21\u677F\uFF08\u9ED8\u8BA4\uFF09");
@@ -923,13 +999,14 @@ catch {
       new ExportModeModal(this.app, resolve).open();
     });
   }
-  selectFormatSettings(templateFiles) {
+  selectFormatSettings(templateFiles, outputName) {
     return new Promise((resolve) => {
       new FormatSettingsModal(
         this.app,
         {
           presets: this.exportSettings.presets,
-          templateFiles
+          templateFiles,
+          outputName
         },
         resolve
       ).open();
@@ -948,6 +1025,17 @@ catch {
     }
     const vaultPath = adapter.getBasePath();
     const markdownPath = path.join(vaultPath, file.path);
+    let markdownSource = "";
+    try {
+      markdownSource = await this.app.vault.cachedRead(file);
+    } catch (error) {
+      new import_obsidian.Notice(`\u65E0\u6CD5\u8BFB\u53D6\u5F53\u524D Markdown\uFF1A${error.message}`);
+      return;
+    }
+    const defaultOutputName = safeDefaultOutputBaseName(
+      markdownArticleTitle(markdownSource, file.basename),
+      file.basename
+    );
     let runtimeStatus = this.runtimeStatus();
     if (!runtimeStatus.ready) {
       const installed = await this.installRuntime();
@@ -988,7 +1076,10 @@ catch {
       new import_obsidian.Notice(`Word \u6A21\u677F\u76EE\u5F55\u4E2D\u6CA1\u6709 .docx \u6587\u4EF6\uFF1A${templateDir}`);
       return;
     }
-    const formatSelection = await this.selectFormatSettings(templateFiles);
+    const formatSelection = await this.selectFormatSettings(
+      templateFiles,
+      defaultOutputName
+    );
     if (!formatSelection) {
       new import_obsidian.Notice("\u5DF2\u53D6\u6D88 Word \u5BFC\u51FA\u3002");
       return;
@@ -1009,6 +1100,17 @@ catch {
       };
       await this.saveData(this.exportSettings);
       new import_obsidian.Notice(`\u5DF2\u4FDD\u5B58\u683C\u5F0F\u65B9\u6848\uFF1A${formatSelection.presetName}`);
+    }
+    const outputPath = path.join(
+      path.dirname(markdownPath),
+      `${formatSelection.outputName}.docx`
+    );
+    if (fs.existsSync(outputPath)) {
+      new import_obsidian.Notice(
+        `\u540C\u540D Word \u5DF2\u5B58\u5728\uFF1A${path.basename(outputPath)}\u3002\u8BF7\u91CD\u65B0\u5BFC\u51FA\u5E76\u4FEE\u6539\u6587\u4EF6\u540D\u3002`,
+        12e3
+      );
+      return;
     }
     let output = "";
     let failedToStart = false;
@@ -1039,6 +1141,7 @@ catch {
           MD_EXPORT_WORD_NONINTERACTIVE: "1",
           MD_EXPORT_WORD_AUTO_OPEN: this.exportSettings.autoOpen === false ? "0" : "1",
           MD_EXPORT_WORD_FAILURE_LOG: failureLogPath,
+          MD_EXPORT_WORD_OUTPUT: outputPath,
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
           MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config)
@@ -1096,7 +1199,7 @@ ${launchError}
       }
       if (code === 0) {
         const wordMatch = output.match(/Word：([^\r\n]+)/);
-        const wordName = wordMatch ? path.basename(wordMatch[1].trim()) : `${file.basename}-\u7F16\u8F91\u5BA1\u9605\u7A3F.docx`;
+        const wordName = wordMatch ? path.basename(wordMatch[1].trim()) : path.basename(outputPath);
         if (fs.existsSync(failureLogPath)) {
           try {
             fs.unlinkSync(failureLogPath);
@@ -1124,7 +1227,7 @@ ${launchError}
     child.stdin.end();
     const modeLabel = exportMode === "strict" ? "\u4E25\u683C\u6A21\u5F0F" : "\u517C\u5BB9\u6A21\u5F0F";
     new import_obsidian.Notice(
-      `\u6B63\u5728\u5BFC\u51FA\uFF08${modeLabel}\uFF5C${formatSelection.displayName}\uFF09\uFF1A${file.name}`
+      `\u6B63\u5728\u5BFC\u51FA\uFF08${modeLabel}\uFF5C${formatSelection.displayName}\uFF09\uFF1A` + path.basename(outputPath)
     );
   }
 };

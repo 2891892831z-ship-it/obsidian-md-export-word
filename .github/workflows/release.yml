@@ -70,6 +70,10 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check -r runtime\requirements.txt
+          # The exporter locates the Obsidian vault root by walking up for a
+          # .obsidian directory. CI is not a real vault, so create a marker so
+          # the smoke run resolves a vault root at the repository checkout.
+          New-Item -ItemType Directory -Path .obsidian -Force | Out-Null
           $env:MD_EXPORT_WORD_PANDOC = "${{ steps.binaries.outputs.pandoc }}"
           $env:MD_EXPORT_WORD_CROSSREF = "${{ steps.binaries.outputs.crossref }}"
           $env:MD_EXPORT_WORD_FAILURE_LOG = "$PWD\dist\smoke-failure.log.txt"
@@ -77,6 +81,17 @@ jobs:
           if (-not (Test-Path -LiteralPath dist\smoke.docx)) { throw "Smoke Word was not generated" }
           if (Test-Path -LiteralPath dist\smoke.log.txt) { throw "Success must not generate a log file" }
           if (Test-Path -LiteralPath $env:MD_EXPORT_WORD_FAILURE_LOG) { throw "Success generated a failure log" }
+          $defaultWord = "$PWD\tests\fixtures\运行时烟雾测试.docx"
+          python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible
+          if (-not (Test-Path -LiteralPath $defaultWord)) { throw "Default article-title Word was not generated" }
+          if (Test-Path -LiteralPath "$PWD\tests\fixtures\smoke-编辑审阅稿.docx") { throw "Legacy output suffix was generated" }
+          Remove-Item -LiteralPath $defaultWord -Force
+          $customWord = "$PWD\dist\custom-output-name.docx"
+          $env:MD_EXPORT_WORD_OUTPUT = $customWord
+          python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible
+          if (-not (Test-Path -LiteralPath $customWord)) { throw "Custom output name was not honored" }
+          Remove-Item -LiteralPath $customWord -Force
+          Remove-Item Env:MD_EXPORT_WORD_OUTPUT
           $env:MD_EXPORT_WORD_FAILURE_LOG = "$PWD\dist\expected-failure.log.txt"
           python runtime\scripts\md_export_word_template.py tests\fixtures\failure-invalid.md --yes --no-open --mode compatible --output dist\must-not-exist.docx
           if ($LASTEXITCODE -eq 0) { throw "Failure fixture unexpectedly succeeded" }
