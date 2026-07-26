@@ -2860,16 +2860,14 @@ def validate_docx(
             image=image_caption_id,
             table=table_caption_id,
         )
-        compatible_mode = (
-            source_inventory.get("export_mode") == "compatible"
-        )
         for index, paragraph in enumerate(caption_paragraphs, 1):
             caption_text = paragraph_text(paragraph)
+            # Citation strictness must not constrain the document language.
+            # English journals commonly use "Fig. 1", "Figure 1" and
+            # "Table 1" even when strict Zotero validation is enabled.
             caption_pattern = (
-                r"^(?:(?:图|表)\d+|"
-                r"(?:Fig(?:ure)?\.?|Table)\s*\d+(?:[.:])?)\s+\S"
-                if compatible_mode
-                else r"^(?:图|表)\d+ \S"
+                r"^(?:(?:图|表)\s*\d+(?:[.:：])?|"
+                r"(?:Fig(?:ure)?\.?|Table)\s*\d+(?:[.:：])?)\s+\S"
             )
             if not re.match(
                 caption_pattern,

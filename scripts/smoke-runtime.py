@@ -20,6 +20,7 @@ def run_export(
     fixture: Path,
     env: dict[str, str],
     *extra: str,
+    mode: str = "compatible",
 ) -> int:
     result = subprocess.run(
         [
@@ -30,7 +31,7 @@ def run_export(
             "--yes",
             "--no-open",
             "--mode",
-            "compatible",
+            mode,
             *extra,
         ],
         cwd=exporter.parent,
@@ -69,6 +70,8 @@ def main() -> int:
     default_word = smoke.parent / "运行时烟雾测试.docx"
     legacy_word = smoke.parent / "smoke-编辑审阅稿.docx"
     custom_word = output_dir / "custom-output-name.docx"
+    strict_word = output_dir / "strict-english-captions.docx"
+    strict_log = output_dir / "strict-english-captions.log.txt"
     failure_word = output_dir / "must-not-exist.docx"
     failure_log = output_dir / "expected-failure.log.txt"
     generated = [
@@ -77,6 +80,8 @@ def main() -> int:
         default_word,
         legacy_word,
         custom_word,
+        strict_word,
+        strict_log,
         failure_word,
         failure_log,
     ]
@@ -141,6 +146,26 @@ def main() -> int:
         require(
             len(timestamped) == 1,
             "Timestamped duplicate Word was not generated exactly once",
+        )
+
+        env.pop("MD_EXPORT_WORD_OUTPUT", None)
+        env["MD_EXPORT_WORD_FAILURE_LOG"] = str(strict_log)
+        code = run_export(
+            Path(sys.executable),
+            exporter,
+            smoke,
+            env,
+            "--output",
+            str(strict_word),
+            mode="strict",
+        )
+        require(
+            code == 0 and strict_word.is_file(),
+            "Strict mode rejected English Fig./Table captions",
+        )
+        require(
+            not strict_log.exists(),
+            "Strict English-caption export generated a failure log",
         )
 
         env.pop("MD_EXPORT_WORD_OUTPUT", None)

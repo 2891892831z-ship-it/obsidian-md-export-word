@@ -36,7 +36,7 @@ var import_obsidian = require("obsidian");
 var import_node_child_process = require("node:child_process");
 var fs = __toESM(require("node:fs"), 1);
 var path = __toESM(require("node:path"), 1);
-var PLUGIN_VERSION = "1.4.0";
+var PLUGIN_VERSION = "1.4.1";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_TARGETS = Object.freeze({
@@ -544,12 +544,20 @@ var ExportProgressModal = class extends import_obsidian.Modal {
     });
     this.contentEl.createEl("h4", { text: "\u5B9E\u65F6\u8FC7\u7A0B" });
     this.logEl = this.contentEl.createEl("pre", {
-      cls: "md-export-word-progress-log"
+      cls: "md-export-word-progress-log",
+      attr: {
+        tabindex: "0",
+        "aria-label": "Word \u5BFC\u51FA\u5B9E\u65F6\u8FC7\u7A0B\uFF0C\u53EF\u9009\u62E9\u5E76\u590D\u5236"
+      }
     });
     this.actionsEl = this.contentEl.createDiv({
       cls: "md-export-word-progress-actions"
     });
-    new import_obsidian.Setting(this.actionsEl).addButton(
+    const actions = new import_obsidian.Setting(this.actionsEl);
+    actions.addButton(
+      (button) => button.setButtonText("\u590D\u5236\u5F53\u524D\u8FC7\u7A0B").onClick(() => this.copyLogText())
+    );
+    actions.addButton(
       (button) => button.setButtonText("\u9690\u85CF\u7A97\u53E3").onClick(() => this.close())
     );
   }
@@ -612,13 +620,86 @@ var ExportProgressModal = class extends import_obsidian.Modal {
     }
     this.appendLog(normalized, isError);
   }
+  async copyText(text, successMessage) {
+    const value = String(text || "").trim();
+    if (!value) {
+      new import_obsidian.Notice("\u5F53\u524D\u6CA1\u6709\u53EF\u590D\u5236\u7684\u65E5\u5FD7\u5185\u5BB9\u3002");
+      return false;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) {
+          throw new Error("\u7CFB\u7EDF\u62D2\u7EDD\u590D\u5236\u64CD\u4F5C");
+        }
+      }
+      new import_obsidian.Notice(successMessage);
+      return true;
+    } catch (error) {
+      new import_obsidian.Notice(`\u590D\u5236\u5931\u8D25\uFF1A${error.message}`, 1e4);
+      return false;
+    }
+  }
+  async copyLogText(logPath = "") {
+    let text = this.logLines.join("\n");
+    if (logPath && fs.existsSync(logPath)) {
+      try {
+        text = fs.readFileSync(logPath, "utf8");
+      } catch {
+      }
+    }
+    return await this.copyText(
+      text,
+      logPath ? "\u9519\u8BEF\u65E5\u5FD7\u5DF2\u590D\u5236\u5230\u526A\u8D34\u677F\u3002" : "\u5F53\u524D\u5BFC\u51FA\u8FC7\u7A0B\u5DF2\u590D\u5236\u3002"
+    );
+  }
+  openLogFile(logPath) {
+    if (!logPath || !fs.existsSync(logPath)) {
+      new import_obsidian.Notice("\u672A\u627E\u5230\u9519\u8BEF\u65E5\u5FD7\u6587\u4EF6\u3002", 1e4);
+      return;
+    }
+    const executable = process.platform === "darwin" ? "/usr/bin/open" : "powershell.exe";
+    const args = process.platform === "darwin" ? [logPath] : [
+      "-NoProfile",
+      "-Command",
+      "Start-Process -FilePath $args[0]",
+      logPath
+    ];
+    try {
+      const child = (0, import_node_child_process.spawn)(executable, args, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true
+      });
+      child.once("error", (error) => {
+        new import_obsidian.Notice(`\u65E0\u6CD5\u6253\u5F00\u9519\u8BEF\u65E5\u5FD7\uFF1A${error.message}`, 1e4);
+      });
+      child.unref();
+    } catch (error) {
+      new import_obsidian.Notice(`\u65E0\u6CD5\u6253\u5F00\u9519\u8BEF\u65E5\u5FD7\uFF1A${error.message}`, 1e4);
+    }
+  }
   complete(wordName) {
     this.updateProgress(100, "\u5BFC\u51FA\u5B8C\u6210", wordName, "success");
     if (!this.actionsEl) {
       return;
     }
     this.actionsEl.empty();
-    new import_obsidian.Setting(this.actionsEl).addButton(
+    const actions = new import_obsidian.Setting(this.actionsEl);
+    actions.addButton(
+      (button) => button.setButtonText("\u590D\u5236\u8FC7\u7A0B").onClick(() => this.copyLogText())
+    );
+    actions.addButton(
       (button) => button.setButtonText("\u5B8C\u6210\u5E76\u5173\u95ED").setCta().onClick(() => this.close())
     );
   }
@@ -636,7 +717,16 @@ var ExportProgressModal = class extends import_obsidian.Modal {
       return;
     }
     this.actionsEl.empty();
-    new import_obsidian.Setting(this.actionsEl).addButton(
+    const actions = new import_obsidian.Setting(this.actionsEl);
+    actions.addButton(
+      (button) => button.setButtonText("\u590D\u5236\u9519\u8BEF\u65E5\u5FD7").setCta().onClick(() => this.copyLogText(logPath))
+    );
+    if (logPath) {
+      actions.addButton(
+        (button) => button.setButtonText("\u6253\u5F00\u65E5\u5FD7\u6587\u4EF6").onClick(() => this.openLogFile(logPath))
+      );
+    }
+    actions.addButton(
       (button) => button.setButtonText("\u5173\u95ED").setWarning().onClick(() => this.close())
     );
   }
