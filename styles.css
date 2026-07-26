@@ -6,3 +6,55 @@
 .md-export-word-warning {
   color: var(--text-warning);
 }
+
+.md-export-word-progress-modal {
+  min-width: min(680px, 85vw);
+}
+
+.md-export-word-progress-file,
+.md-export-word-progress-detail {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  margin-bottom: 0.5rem;
+}
+
+.md-export-word-progress-status {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  margin: 0.75rem 0 0.35rem;
+}
+
+.md-export-word-progress-status.is-success {
+  color: var(--text-success);
+}
+
+.md-export-word-progress-status.is-error {
+  color: var(--text-error);
+}
+
+.md-export-word-progress {
+  display: block;
+  height: 0.75rem;
+  width: 100%;
+}
+
+.md-export-word-progress-log {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  margin: 0;
+  max-height: 260px;
+  min-height: 150px;
+  overflow: auto;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.md-export-word-progress-actions .setting-item {
+  border-top: 0;
+  padding-bottom: 0;
+}

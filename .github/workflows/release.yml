@@ -72,8 +72,16 @@ jobs:
           python -m pip install --disable-pip-version-check -r runtime\requirements.txt
           $env:MD_EXPORT_WORD_PANDOC = "${{ steps.binaries.outputs.pandoc }}"
           $env:MD_EXPORT_WORD_CROSSREF = "${{ steps.binaries.outputs.crossref }}"
+          $env:MD_EXPORT_WORD_FAILURE_LOG = "$PWD\dist\smoke-failure.log.txt"
           python runtime\scripts\md_export_word_template.py tests\fixtures\smoke.md --yes --no-open --mode compatible --output dist\smoke.docx
           if (-not (Test-Path -LiteralPath dist\smoke.docx)) { throw "Smoke Word was not generated" }
+          if (Test-Path -LiteralPath dist\smoke.log.txt) { throw "Success must not generate a log file" }
+          if (Test-Path -LiteralPath $env:MD_EXPORT_WORD_FAILURE_LOG) { throw "Success generated a failure log" }
+          $env:MD_EXPORT_WORD_FAILURE_LOG = "$PWD\dist\expected-failure.log.txt"
+          python runtime\scripts\md_export_word_template.py tests\fixtures\failure-invalid.md --yes --no-open --mode compatible --output dist\must-not-exist.docx
+          if ($LASTEXITCODE -eq 0) { throw "Failure fixture unexpectedly succeeded" }
+          if (-not (Test-Path -LiteralPath $env:MD_EXPORT_WORD_FAILURE_LOG)) { throw "Failure log was not generated" }
+          if (Test-Path -LiteralPath dist\must-not-exist.docx) { throw "Failure generated an output Word" }
 
       - name: Build Windows runtime
         shell: pwsh

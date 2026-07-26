@@ -17,6 +17,7 @@ declare const __GITHUB_REPOSITORY__: string;
 const PLUGIN_VERSION = "1.3.0";
 const RUNTIME_ASSET = "md-export-word-runtime-windows.zip";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
+const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 
 const DEFAULT_TEMPLATE_FILE = "导出格式模板.docx";
 const DEFAULT_FORMAT = Object.freeze({
@@ -465,6 +466,150 @@ class FormatSettingsModal extends Modal {
   }
 }
 
+class ExportProgressModal extends Modal {
+  constructor(app, fileName) {
+    super(app);
+    this.fileName = fileName;
+    this.logLines = [];
+    this.lastPercent = 0;
+    this.closedByUser = false;
+  }
+
+  onOpen() {
+    this.titleEl.setText("正在导出 Word");
+    this.contentEl.addClass("md-export-word-progress-modal");
+    this.contentEl.createDiv({
+      cls: "md-export-word-progress-file",
+      text: this.fileName
+    });
+    this.statusEl = this.contentEl.createDiv({
+      cls: "md-export-word-progress-status",
+      text: "准备启动导出程序…"
+    });
+    this.progressEl = this.contentEl.createEl("progress", {
+      cls: "md-export-word-progress",
+      attr: { max: "100", value: "0" }
+    });
+    this.detailEl = this.contentEl.createDiv({
+      cls: "md-export-word-progress-detail",
+      text: "0%"
+    });
+    this.contentEl.createEl("h4", { text: "实时过程" });
+    this.logEl = this.contentEl.createEl("pre", {
+      cls: "md-export-word-progress-log"
+    });
+    this.actionsEl = this.contentEl.createDiv({
+      cls: "md-export-word-progress-actions"
+    });
+    new Setting(this.actionsEl).addButton((button) =>
+      button.setButtonText("隐藏窗口").onClick(() => this.close())
+    );
+  }
+
+  updateProgress(percent, stage, detail = "", level = "info") {
+    const safePercent = Math.max(
+      this.lastPercent,
+      Math.min(100, Number(percent) || 0)
+    );
+    this.lastPercent = safePercent;
+    if (this.progressEl) {
+      this.progressEl.value = safePercent;
+    }
+    if (this.statusEl) {
+      this.statusEl.setText(stage || "正在处理…");
+      this.statusEl.toggleClass("is-error", level === "error");
+      this.statusEl.toggleClass("is-success", level === "success");
+    }
+    if (this.detailEl) {
+      this.detailEl.setText(
+        detail ? `${safePercent}% · ${detail}` : `${safePercent}%`
+      );
+    }
+    this.appendLog(
+      `[${String(safePercent).padStart(3, " ")}%] ${stage}` +
+        (detail ? ` — ${detail}` : ""),
+      level === "error"
+    );
+  }
+
+  appendLog(line, isError = false) {
+    const normalized = String(line || "").trim();
+    if (!normalized) {
+      return;
+    }
+    this.logLines.push(isError ? `ERROR ${normalized}` : normalized);
+    if (this.logLines.length > 120) {
+      this.logLines.splice(0, this.logLines.length - 120);
+    }
+    if (this.logEl) {
+      this.logEl.setText(this.logLines.join("\n"));
+      this.logEl.scrollTop = this.logEl.scrollHeight;
+    }
+  }
+
+  consumeLine(line, isError = false) {
+    const normalized = String(line || "").trim();
+    if (!normalized) {
+      return;
+    }
+    if (normalized.startsWith(PROGRESS_PREFIX)) {
+      try {
+        const payload = JSON.parse(normalized.slice(PROGRESS_PREFIX.length));
+        this.updateProgress(
+          payload.percent,
+          payload.stage,
+          payload.detail,
+          payload.level
+        );
+        return;
+      } catch (error) {
+        this.appendLog(`无法解析进度事件：${error.message}`, true);
+      }
+    }
+    this.appendLog(normalized, isError);
+  }
+
+  complete(wordName) {
+    this.updateProgress(100, "导出完成", wordName, "success");
+    if (!this.actionsEl) {
+      return;
+    }
+    this.actionsEl.empty();
+    new Setting(this.actionsEl).addButton((button) =>
+      button
+        .setButtonText("完成并关闭")
+        .setCta()
+        .onClick(() => this.close())
+    );
+  }
+
+  fail(summary, logPath) {
+    this.updateProgress(
+      100,
+      "导出失败",
+      logPath ? `错误日志：${logPath}` : summary,
+      "error"
+    );
+    if (summary) {
+      this.appendLog(summary, true);
+    }
+    if (!this.actionsEl) {
+      return;
+    }
+    this.actionsEl.empty();
+    new Setting(this.actionsEl).addButton((button) =>
+      button
+        .setButtonText("关闭")
+        .setWarning()
+        .onClick(() => this.close())
+    );
+  }
+
+  onClose() {
+    this.closedByUser = true;
+  }
+}
+
 class TextInputModal extends Modal {
   constructor(app, title, description, initialValue, resolve) {
     super(app);
@@ -538,6 +683,49 @@ function runProcess(executable, args, options = {}) {
     child.once("error", reject);
     child.once("close", (code) => resolve({ code, output }));
   });
+}
+
+function humanizeProcessOutput(output) {
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const normalized = line.trim();
+      if (!normalized.startsWith(PROGRESS_PREFIX)) {
+        return line;
+      }
+      try {
+        const event = JSON.parse(normalized.slice(PROGRESS_PREFIX.length));
+        return (
+          `[${event.percent}%] ${event.stage}` +
+          (event.detail ? ` — ${event.detail}` : "")
+        );
+      } catch {
+        return line;
+      }
+    })
+    .join("\n")
+    .trim();
+}
+
+function appendFailureProcessOutput(logPath, output) {
+  const humanOutput = humanizeProcessOutput(output);
+  if (!humanOutput) {
+    return;
+  }
+  const section =
+    "\nObsidian captured process output\n" +
+    "--------------------------------\n" +
+    humanOutput +
+    "\n";
+  if (fs.existsSync(logPath)) {
+    fs.appendFileSync(logPath, section, "utf8");
+  } else {
+    fs.writeFileSync(
+      logPath,
+      "MD Export Word failure report\n" + section,
+      "utf8"
+    );
+  }
 }
 
 class MdExportWordSettingTab extends PluginSettingTab {
@@ -1032,6 +1220,25 @@ catch {
 
     let output = "";
     let failedToStart = false;
+    const failureLogPath = path.join(
+      path.dirname(markdownPath),
+      `${file.basename}-导出失败.log.txt`
+    );
+    if (fs.existsSync(failureLogPath)) {
+      try {
+        fs.unlinkSync(failureLogPath);
+      } catch {
+        // A stale diagnostic may be open in another program; export can continue.
+      }
+    }
+    const progressModal = new ExportProgressModal(this.app, file.name);
+    progressModal.open();
+    progressModal.updateProgress(
+      1,
+      "启动导出程序",
+      `${exportMode === "strict" ? "严格模式" : "兼容模式"} · ` +
+        formatSelection.displayName
+    );
     const child = spawn(
       "cmd.exe",
       ["/d", "/c", "call", commandPath, markdownPath],
@@ -1042,6 +1249,7 @@ catch {
           MD_EXPORT_WORD_NONINTERACTIVE: "1",
           MD_EXPORT_WORD_AUTO_OPEN:
             this.exportSettings.autoOpen === false ? "0" : "1",
+          MD_EXPORT_WORD_FAILURE_LOG: failureLogPath,
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
           MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config)
@@ -1051,20 +1259,48 @@ catch {
       }
     );
 
-    const collectOutput = (data) => {
-      output += data.toString("utf8");
+    const lineBuffers = { stdout: "", stderr: "" };
+    const collectOutput = (data, streamName) => {
+      const text = data.toString("utf8");
+      output += text;
       if (output.length > 12000) {
         output = output.slice(-12000);
       }
+      lineBuffers[streamName] += text;
+      const lines = lineBuffers[streamName].split(/\r?\n/);
+      lineBuffers[streamName] = lines.pop() || "";
+      for (const line of lines) {
+        progressModal.consumeLine(line, streamName === "stderr");
+      }
     };
-    child.stdout.on("data", collectOutput);
-    child.stderr.on("data", collectOutput);
+    const flushLineBuffers = () => {
+      for (const streamName of ["stdout", "stderr"]) {
+        if (lineBuffers[streamName]) {
+          progressModal.consumeLine(
+            lineBuffers[streamName],
+            streamName === "stderr"
+          );
+          lineBuffers[streamName] = "";
+        }
+      }
+    };
+    child.stdout.on("data", (data) => collectOutput(data, "stdout"));
+    child.stderr.on("data", (data) => collectOutput(data, "stderr"));
     child.stdin.on("error", () => {});
     child.once("error", (error) => {
       failedToStart = true;
+      const launchError = `启动 Word 导出失败：${error.message}`;
+      output += `\n${launchError}\n`;
+      try {
+        appendFailureProcessOutput(failureLogPath, output);
+      } catch {
+        // The launch error is still visible in the modal and Notice.
+      }
+      progressModal.fail(launchError, failureLogPath);
       new Notice(`启动 Word 导出失败：${error.message}`);
     });
     child.once("close", (code) => {
+      flushLineBuffers();
       if (failedToStart) {
         return;
       }
@@ -1073,16 +1309,33 @@ catch {
         const wordName = wordMatch
           ? path.basename(wordMatch[1].trim())
           : `${file.basename}-编辑审阅稿.docx`;
+        if (fs.existsSync(failureLogPath)) {
+          try {
+            fs.unlinkSync(failureLogPath);
+          } catch {
+            // Do not turn a successful export into a failure over stale log cleanup.
+          }
+        }
+        progressModal.complete(wordName);
         new Notice(`Word export completed: ${wordName}`, 8000);
         return;
       }
 
-      const details = output
+      try {
+        appendFailureProcessOutput(failureLogPath, output);
+      } catch {
+        // Python already attempted to write its own failure report.
+      }
+      const details = humanizeProcessOutput(output)
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean)
         .slice(-4)
         .join("；");
+      progressModal.fail(
+        details || `Word export failed with code ${code}.`,
+        failureLogPath
+      );
       new Notice(
         details
           ? `Word export failed (${code}): ${details}`
