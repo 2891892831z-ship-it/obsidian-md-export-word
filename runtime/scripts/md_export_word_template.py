@@ -1115,6 +1115,14 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
         "display_math_count": display_math_count,
         "table_count": table_count,
         "headers": headers,
+        "caption_titles": {
+            "figure": stringify_metadata(
+                ast.get("meta", {}).get("figureTitle")
+            ),
+            "table": stringify_metadata(
+                ast.get("meta", {}).get("tableTitle")
+            ),
+        },
     }
 
 
@@ -1236,6 +1244,47 @@ def stringify_inlines(node: Any) -> str:
         elif part.get("t") in ("Space", "SoftBreak", "LineBreak"):
             pieces.append(" ")
     return "".join(pieces).strip()
+
+
+def stringify_metadata(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    if node.get("t") == "MetaString":
+        return str(node.get("c", "")).strip()
+    return stringify_inlines(node)
+
+
+DEFAULT_CAPTION_TITLES = {
+    "figure": ("图", "Fig.", "Figure"),
+    "table": ("表", "Table"),
+}
+
+
+def caption_title_candidates(
+    source_inventory: dict[str, Any],
+    caption_kind: str,
+) -> tuple[str, ...]:
+    configured = str(
+        source_inventory.get("caption_titles", {}).get(caption_kind, "")
+    ).strip()
+    candidates = [
+        configured,
+        *DEFAULT_CAPTION_TITLES[caption_kind],
+    ]
+    return tuple(dict.fromkeys(value for value in candidates if value))
+
+
+def valid_caption_text(text: str, titles: tuple[str, ...]) -> bool:
+    title_pattern = "|".join(
+        re.escape(title) for title in sorted(titles, key=len, reverse=True)
+    )
+    return bool(
+        re.match(
+            rf"^(?:{title_pattern})\s*\d+(?:[.:：])?\s+\S",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def resolve_image(
@@ -2862,20 +2911,23 @@ def validate_docx(
         )
         for index, paragraph in enumerate(caption_paragraphs, 1):
             caption_text = paragraph_text(paragraph)
-            # Citation strictness must not constrain the document language.
-            # English journals commonly use "Fig. 1", "Figure 1" and
-            # "Table 1" even when strict Zotero validation is enabled.
-            caption_pattern = (
-                r"^(?:(?:图|表)\s*\d+(?:[.:：])?|"
-                r"(?:Fig(?:ure)?\.?|Table)\s*\d+(?:[.:：])?)\s+\S"
+            caption_style = paragraph.xpath(
+                "string(./w:pPr/w:pStyle/@w:val)", namespaces=NS
             )
-            if not re.match(
-                caption_pattern,
-                caption_text,
-                flags=re.IGNORECASE,
-            ):
+            caption_kind = (
+                "figure"
+                if caption_style == image_caption_id
+                else "table"
+            )
+            accepted_titles = caption_title_candidates(
+                source_inventory,
+                caption_kind,
+            )
+            if not valid_caption_text(caption_text, accepted_titles):
                 errors.append(
-                    f"图表题 {index} 的编号或题名格式不符合当前导出模式"
+                    f"图表题 {index} 的编号或题名格式不正确："
+                    f"{caption_text!r}；允许的题名前缀为 "
+                    + " / ".join(accepted_titles)
                 )
             caption_sizes = paragraph.xpath(
                 ".//w:r[w:t]/w:rPr/w:sz/@w:val", namespaces=NS
