@@ -13,7 +13,12 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+WP_NS = (
+    "http://schemas.openxmlformats.org/drawingml/2006/"
+    "wordprocessingDrawing"
+)
 W = f"{{{W_NS}}}"
+WP = f"{{{WP_NS}}}"
 
 
 def sha256_file(path: Path) -> str:
@@ -115,6 +120,42 @@ def visible_run_format(path: Path, text: str) -> tuple[str, str]:
     raise RuntimeError(f"Fixture text not found: {text}")
 
 
+def figure_reflow_inventory(path: Path) -> dict[str, int]:
+    with ZipFile(path) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+    body = root.find(W + "body")
+    if body is None:
+        raise RuntimeError("Reflow fixture Word has no body")
+    image_index = -1
+    moved_index = -1
+    boundary_index = -1
+    max_image_height = 0
+    for index, element in enumerate(list(body)):
+        text = "".join(
+            node.text or "" for node in element.iter(W + "t")
+        )
+        extents = list(element.iter(WP + "extent"))
+        if extents:
+            image_index = index
+            max_image_height = max(
+                max_image_height,
+                *[
+                    int(extent.get("cy", "0"))
+                    for extent in extents
+                ],
+            )
+        if "回填段落一应在导出的" in text:
+            moved_index = index
+        if "边界段落不得移动到上一张图片之前" in text:
+            boundary_index = index
+    return {
+        "image_index": image_index,
+        "moved_index": moved_index,
+        "boundary_index": boundary_index,
+        "max_image_height": max_image_height,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pandoc", required=True, type=Path)
@@ -133,6 +174,9 @@ def main() -> int:
     strict_english_caption = (
         workspace / "tests" / "fixtures" / "strict-english-caption.md"
     )
+    figure_reflow = (
+        workspace / "tests" / "fixtures" / "figure-reflow.md"
+    )
     invalid = workspace / "tests" / "fixtures" / "failure-invalid.md"
     output_dir = workspace / "dist"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +193,8 @@ def main() -> int:
     strict_english_caption_word = (
         output_dir / "strict-english-caption.docx"
     )
+    figure_reflow_word = output_dir / "figure-reflow.docx"
+    figure_reflow_log = output_dir / "figure-reflow-failure.log.txt"
     recolor_source = output_dir / "zotero-color-source.docx"
     recolor_word = output_dir / "zotero-color-output.docx"
     recolor_log = output_dir / "zotero-color-failure.log.txt"
@@ -162,6 +208,8 @@ def main() -> int:
         custom_word,
         strict_log,
         strict_english_caption_word,
+        figure_reflow_word,
+        figure_reflow_log,
         recolor_source,
         recolor_word,
         recolor_log,
@@ -285,6 +333,43 @@ def main() -> int:
         require(
             not strict_log.exists(),
             "Strict English-caption export generated a failure log",
+        )
+
+        env.pop("MD_EXPORT_WORD_OUTPUT", None)
+        env["MD_EXPORT_WORD_FAILURE_LOG"] = str(figure_reflow_log)
+        reflow_source_hash = sha256_file(figure_reflow)
+        code = run_export(
+            Path(sys.executable),
+            exporter,
+            figure_reflow,
+            env,
+            "--output",
+            str(figure_reflow_word),
+        )
+        require(
+            code == 0 and figure_reflow_word.is_file(),
+            "Figure-reflow Word missing",
+        )
+        require(
+            sha256_file(figure_reflow) == reflow_source_hash,
+            "Figure reflow modified the source Markdown",
+        )
+        reflow = figure_reflow_inventory(figure_reflow_word)
+        require(
+            0 <= reflow["moved_index"] < reflow["image_index"],
+            "Following prose was not moved before the large figure",
+        )
+        require(
+            reflow["boundary_index"] > reflow["image_index"],
+            "Figure reflow crossed the next section heading",
+        )
+        require(
+            0 < reflow["max_image_height"] <= 12518 * 635,
+            "Large figure was not capped to printable page height",
+        )
+        require(
+            not figure_reflow_log.exists(),
+            "Figure-reflow export generated a failure log",
         )
 
         env.pop("MD_EXPORT_WORD_OUTPUT", None)

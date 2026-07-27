@@ -1,6 +1,6 @@
 {
   "name": "obsidian-md-export-word",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Cross-platform Obsidian Markdown to formatted Word exporter.",
   "main": "main.js",
   "type": "module",

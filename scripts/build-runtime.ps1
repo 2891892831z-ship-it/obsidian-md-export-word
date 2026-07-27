@@ -43,6 +43,11 @@ if (Test-Path -LiteralPath (Join-Path $stageRuntime ".venv")) {
 if (Test-Path -LiteralPath $binDir) {
     Remove-Item -LiteralPath $binDir -Recurse -Force
 }
+Get-ChildItem -LiteralPath $stageRuntime -Recurse -Directory -Filter "__pycache__" |
+    Sort-Object FullName -Descending |
+    Remove-Item -Recurse -Force
+Get-ChildItem -LiteralPath $stageRuntime -Recurse -File -Filter "*.pyc" |
+    Remove-Item -Force
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 Copy-Item -LiteralPath $pandocPath -Destination (Join-Path $binDir "pandoc.exe")
 Copy-Item -LiteralPath $crossrefPath -Destination (Join-Path $binDir "pandoc-crossref.exe")

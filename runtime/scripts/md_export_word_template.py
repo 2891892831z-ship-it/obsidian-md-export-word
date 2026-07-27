@@ -17,6 +17,7 @@ import datetime as dt
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import sqlite3
@@ -88,6 +89,7 @@ DEFAULT_FORMAT_CONFIG: dict[str, Any] = {
     "note_line_spacing": 1.5,
     "formula_size_pt": 12.0,
     "margin_cm": 2.54,
+    "figure_reflow": True,
 }
 
 FORMAT_NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
@@ -129,6 +131,12 @@ def load_format_config(raw_json: str | None) -> dict[str, Any]:
             raise ExportError(f"格式设置 {key} 不能为空")
         config[key] = value
 
+    if "figure_reflow" in supplied:
+        value = supplied["figure_reflow"]
+        if not isinstance(value, bool):
+            raise ExportError("格式设置 figure_reflow 必须是布尔值")
+        config["figure_reflow"] = value
+
     for key, (minimum, maximum) in FORMAT_NUMERIC_LIMITS.items():
         if key not in supplied:
             continue
@@ -164,6 +172,19 @@ def content_width_emu(config: dict[str, Any]) -> int:
     return int(round(content_width_dxa(config) / 1440 * 914400))
 
 
+def content_height_dxa(config: dict[str, Any]) -> int:
+    return 16838 - 2 * cm_twips(float(config["margin_cm"]))
+
+
+def figure_image_max_height_dxa(config: dict[str, Any]) -> int:
+    """Reserve printable height for a caption and a short figure note."""
+    reserve = max(
+        1440,
+        3 * line_twips(float(config["caption_line_spacing"])),
+    )
+    return max(1440, content_height_dxa(config) - reserve)
+
+
 def format_config_summary(config: dict[str, Any]) -> str:
     return (
         f"{config['preset_name']}（中文 {config['east_asia_font']}；"
@@ -175,7 +196,9 @@ def format_config_summary(config: dict[str, Any]) -> str:
         f"{config['table_line_spacing']} 倍行距；"
         f"图表题 {config['caption_size_pt']} pt；"
         f"图表注 {config['note_size_pt']} pt；"
-        f"页边距 {config['margin_cm']} cm）"
+        f"页边距 {config['margin_cm']} cm；"
+        f"图片分页回填 "
+        f"{'开启' if config['figure_reflow'] else '关闭'}）"
     )
 
 
@@ -2016,26 +2039,166 @@ def resize_inline_images(
     document_root: etree._Element,
     *,
     max_width_emu: int,
-) -> int:
-    resized = 0
+    max_height_emu: int,
+) -> dict[str, int]:
+    resized = Counter()
     for inline in document_root.xpath(".//wp:inline", namespaces=NS):
         extent = inline.find("wp:extent", namespaces=NS)
         if extent is None:
             continue
         width = int(extent.get("cx", "0"))
         height = int(extent.get("cy", "0"))
-        if width <= 0 or height <= 0 or width <= max_width_emu:
+        if width <= 0 or height <= 0:
             continue
-        scale = max_width_emu / width
-        new_width = max_width_emu
+        width_scale = min(1.0, max_width_emu / width)
+        height_scale = min(1.0, max_height_emu / height)
+        scale = min(width_scale, height_scale)
+        if scale >= 1.0:
+            continue
+        if width_scale < 1.0:
+            resized["width"] += 1
+        if height_scale < 1.0:
+            resized["height"] += 1
+        resized["total"] += 1
+        new_width = round(width * scale)
         new_height = round(height * scale)
         extent.set("cx", str(new_width))
         extent.set("cy", str(new_height))
         for aext in inline.xpath(".//a:xfrm/a:ext", namespaces=NS):
             aext.set("cx", str(new_width))
             aext.set("cy", str(new_height))
-        resized += 1
-    return resized
+    return dict(resized)
+
+
+def paragraph_spacing_value(
+    paragraph: etree._Element,
+    name: str,
+    default: int,
+) -> int:
+    value = paragraph.xpath(
+        f"string(./w:pPr/w:spacing/@w:{name})",
+        namespaces=NS,
+    )
+    try:
+        return int(value) if value else default
+    except ValueError:
+        return default
+
+
+def paragraph_font_twips(
+    paragraph: etree._Element,
+    default_points: float,
+) -> int:
+    values = paragraph.xpath(
+        ".//w:rPr/w:sz/@w:val|.//m:r/w:rPr/w:sz/@w:val",
+        namespaces=NS,
+    )
+    sizes: list[int] = []
+    for value in values:
+        try:
+            sizes.append(int(round(float(value) * 10)))
+        except (TypeError, ValueError):
+            continue
+    return max(sizes, default=points_twips(default_points))
+
+
+def text_em_width(value: str) -> float:
+    width = 0.0
+    for character in value:
+        if character.isspace():
+            width += 0.3
+        elif ord(character) >= 0x2E80:
+            width += 1.0
+        elif character.isupper():
+            width += 0.65
+        elif character.isalnum():
+            width += 0.55
+        else:
+            width += 0.5
+    return width
+
+
+def estimated_paragraph_height_dxa(
+    paragraph: etree._Element,
+    *,
+    max_width_dxa: int,
+    format_config: dict[str, Any],
+) -> int:
+    line = paragraph_spacing_value(
+        paragraph,
+        "line",
+        line_twips(float(format_config["body_line_spacing"])),
+    )
+    before = paragraph_spacing_value(paragraph, "before", 0)
+    after = paragraph_spacing_value(paragraph, "after", 0)
+    drawing_heights = [
+        round(int(value) / 635)
+        for value in paragraph.xpath(
+            ".//wp:inline/wp:extent/@cy",
+            namespaces=NS,
+        )
+        if str(value).isdigit()
+    ]
+    if drawing_heights:
+        return before + max(max(drawing_heights), line) + after
+
+    text = "".join(
+        paragraph.xpath(".//w:t/text()|.//m:t/text()", namespaces=NS)
+    )
+    font_twips = paragraph_font_twips(
+        paragraph,
+        float(format_config["body_size_pt"]),
+    )
+    capacity = max(1.0, max_width_dxa / max(font_twips, 1))
+    lines = max(1, math.ceil(text_em_width(text) / capacity))
+    return before + lines * line + after
+
+
+def estimated_table_height_dxa(
+    table: etree._Element,
+    *,
+    max_width_dxa: int,
+    format_config: dict[str, Any],
+) -> int:
+    height = 0
+    for row in table.findall(W("tr")):
+        row_height = 0
+        for cell in row.findall(W("tc")):
+            cell_height = sum(
+                estimated_paragraph_height_dxa(
+                    paragraph,
+                    max_width_dxa=max_width_dxa,
+                    format_config=format_config,
+                )
+                for paragraph in cell.iter(W("p"))
+            )
+            row_height = max(row_height, cell_height)
+        height += max(
+            row_height,
+            line_twips(float(format_config["table_line_spacing"])),
+        )
+    return height
+
+
+def advance_page_position(
+    position: int,
+    height: int,
+    page_height: int,
+    *,
+    splittable: bool,
+) -> int:
+    if height <= 0:
+        return position
+    if position <= 0:
+        return height % page_height
+    remaining = page_height - position
+    if height < remaining:
+        return position + height
+    if height == remaining:
+        return 0
+    if splittable:
+        return (height - remaining) % page_height
+    return height % page_height
 
 
 def color_fields(document_root: etree._Element) -> dict[str, int]:
@@ -2189,6 +2352,234 @@ def role_for_paragraph(
     if in_highlights:
         return "highlight_item"
     return "body"
+
+
+def paragraph_role_for_reflow(
+    paragraph: etree._Element,
+    id_to_name: dict[str, str],
+) -> str:
+    return role_for_paragraph(
+        paragraph,
+        style_names=id_to_name,
+        in_highlights=False,
+    )
+
+
+def is_transparent_body_marker(element: etree._Element) -> bool:
+    return etree.QName(element).localname in {
+        "bookmarkStart",
+        "bookmarkEnd",
+        "commentRangeStart",
+        "commentRangeEnd",
+        "permStart",
+        "permEnd",
+        "proofErr",
+    }
+
+
+def figure_cluster_start(
+    children: list[etree._Element],
+    picture_index: int,
+) -> int:
+    start = picture_index
+    while start > 0 and is_transparent_body_marker(children[start - 1]):
+        start -= 1
+    return start
+
+
+def figure_cluster_end(
+    children: list[etree._Element],
+    start: int,
+    id_to_name: dict[str, str],
+) -> int:
+    end = start + 1
+    if end < len(children) and children[end].tag == W("p"):
+        if paragraph_role_for_reflow(children[end], id_to_name) == (
+            "image_caption"
+        ):
+            end += 1
+    while end < len(children) and children[end].tag == W("p"):
+        if paragraph_role_for_reflow(children[end], id_to_name) != "note":
+            break
+        end += 1
+    while end < len(children) and is_transparent_body_marker(children[end]):
+        end += 1
+    return end
+
+
+def eligible_reflow_paragraph(
+    element: etree._Element,
+    id_to_name: dict[str, str],
+) -> bool:
+    if element.tag != W("p"):
+        return False
+    if element.xpath(".//w:drawing|.//w:pict", namespaces=NS):
+        return False
+    if element.xpath(
+        "./w:pPr/w:pageBreakBefore|.//w:br[@w:type='page']",
+        namespaces=NS,
+    ):
+        return False
+    if paragraph_role_for_reflow(element, id_to_name) != "body":
+        return False
+    return bool(
+        "".join(
+            element.xpath(
+                ".//w:t/text()|.//m:t/text()",
+                namespaces=NS,
+            )
+        ).strip()
+    )
+
+
+def reflow_large_figures(
+    document_root: etree._Element,
+    *,
+    styles: dict[str, str],
+    format_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill pre-figure gaps with following prose from the same section.
+
+    Only whole top-level body paragraphs move. The first heading, table,
+    equation, note, caption, or another picture is a hard boundary.
+    """
+    if not bool(format_config.get("figure_reflow", True)):
+        return {
+            "enabled": False,
+            "figures_reflowed": 0,
+            "paragraphs_moved": 0,
+            "estimated_blank_lines_filled": 0,
+        }
+    body = document_root.find(W("body"))
+    if body is None:
+        raise ExportError("输出 Word 缺少正文 body")
+
+    id_to_name = {value: key for key, value in styles.items()}
+    max_width = content_width_dxa(format_config)
+    page_height = content_height_dxa(format_config)
+    body_line = line_twips(float(format_config["body_line_spacing"]))
+    minimum_gap = max(3 * body_line, 720)
+    moved_paragraphs = 0
+    filled_height = 0
+    reflowed_figures: set[int] = set()
+    max_moves = 512
+
+    while moved_paragraphs < max_moves:
+        children = list(body)
+        position = 0
+        changed = False
+        index = 0
+        while index < len(children):
+            element = children[index]
+            is_picture = (
+                element.tag == W("p")
+                and bool(
+                    element.xpath(
+                        ".//w:drawing|.//w:pict",
+                        namespaces=NS,
+                    )
+                )
+            )
+            if is_picture:
+                cluster_start = figure_cluster_start(children, index)
+                cluster_end = figure_cluster_end(
+                    children,
+                    index,
+                    id_to_name,
+                )
+                cluster_height = sum(
+                    estimated_paragraph_height_dxa(
+                        item,
+                        max_width_dxa=max_width,
+                        format_config=format_config,
+                    )
+                    if item.tag == W("p")
+                    else estimated_table_height_dxa(
+                        item,
+                        max_width_dxa=max_width,
+                        format_config=format_config,
+                    )
+                    for item in children[index:cluster_end]
+                )
+                remaining = page_height - position if position else page_height
+                needs_new_page = (
+                    position > 0 and cluster_height > remaining
+                )
+                candidate = (
+                    children[cluster_end]
+                    if cluster_end < len(children)
+                    else None
+                )
+                if (
+                    needs_new_page
+                    and remaining >= minimum_gap
+                    and candidate is not None
+                    and eligible_reflow_paragraph(candidate, id_to_name)
+                ):
+                    candidate_height = estimated_paragraph_height_dxa(
+                        candidate,
+                        max_width_dxa=max_width,
+                        format_config=format_config,
+                    )
+                    body.remove(candidate)
+                    body.insert(cluster_start, candidate)
+                    moved_paragraphs += 1
+                    filled_height += min(remaining, candidate_height)
+                    reflowed_figures.add(id(element))
+                    changed = True
+                    break
+                position = advance_page_position(
+                    position,
+                    cluster_height,
+                    page_height,
+                    splittable=False,
+                )
+                index = cluster_end
+                continue
+
+            if element.tag == W("p"):
+                height = estimated_paragraph_height_dxa(
+                    element,
+                    max_width_dxa=max_width,
+                    format_config=format_config,
+                )
+                role = paragraph_role_for_reflow(element, id_to_name)
+                splittable = role in {
+                    "body",
+                    "keywords",
+                    "highlight_item",
+                    "note",
+                }
+            elif element.tag == W("tbl"):
+                height = estimated_table_height_dxa(
+                    element,
+                    max_width_dxa=max_width,
+                    format_config=format_config,
+                )
+                splittable = True
+            else:
+                height = 0
+                splittable = True
+            position = advance_page_position(
+                position,
+                height,
+                page_height,
+                splittable=splittable,
+            )
+            index += 1
+        if not changed:
+            break
+
+    return {
+        "enabled": True,
+        "figures_reflowed": len(reflowed_figures),
+        "paragraphs_moved": moved_paragraphs,
+        "estimated_blank_lines_filled": round(
+            filled_height / max(body_line, 1),
+            1,
+        ),
+        "move_limit_reached": moved_paragraphs >= max_moves,
+    }
 
 
 def format_body_paragraphs(
@@ -2456,9 +2847,17 @@ def patch_docx(
             ),
             format_config=format_config,
         )
-        resized_images = resize_inline_images(
+        image_resize_report = resize_inline_images(
             document,
             max_width_emu=content_width_emu(format_config),
+            max_height_emu=(
+                figure_image_max_height_dxa(format_config) * 635
+            ),
+        )
+        figure_reflow_report = reflow_large_figures(
+            document,
+            styles=styles,
+            format_config=format_config,
         )
         quote_splits = split_quote_runs(
             document,
@@ -2520,7 +2919,9 @@ def patch_docx(
         "formal_tables": formal_tables,
         "equation_tables": equation_tables,
         "numbered_equations_wrapped": wrapped_equations,
-        "resized_images": resized_images,
+        "resized_images": image_resize_report.get("total", 0),
+        "image_resize": image_resize_report,
+        "figure_reflow": figure_reflow_report,
         "quote_run_splits": quote_splits,
         "raw_script_baseline": raw_script_baseline,
         "fields": field_counts,
@@ -3130,6 +3531,11 @@ def validate_docx(
             if int(extent.get("cx", "0")) > max_width_emu:
                 errors.append("存在超过当前版心宽度的图片")
                 break
+        max_height_emu = figure_image_max_height_dxa(format_config) * 635
+        for extent in document.xpath(".//wp:inline/wp:extent", namespaces=NS):
+            if int(extent.get("cy", "0")) > max_height_emu:
+                errors.append("存在超过当前版心建议高度的图片")
+                break
 
         if errors:
             validation_errors = errors
@@ -3582,7 +3988,14 @@ def main() -> int:
             format_config=format_config,
         )
         format_report["duplicate_citekeys_resolved"] = duplicate_keys
-        emit_progress(92, "自动检查 Word", "结构、编号、引用域与格式均已检查")
+        reflow_report = format_report["figure_reflow"]
+        emit_progress(
+            92,
+            "自动检查 Word",
+            "图片分页回填 "
+            f"{reflow_report['figures_reflowed']} 处；"
+            "结构、编号、引用域与格式均已检查",
+        )
 
     emit_progress(96, "确认源文件", "检查导出期间 Markdown 是否发生变化")
     if sha256_file(md_path) != source_hash_before:
@@ -3600,6 +4013,15 @@ def main() -> int:
         f"Zotero 引文域 {validation['fields'].get('ZOTERO_ITEM', 0)} 个；"
         f"缺失 citekey 占位符 {len(validation['missing_citekeys'])} 个"
         "）"
+    )
+    reflow_report = format_report["figure_reflow"]
+    resize_report = format_report["image_resize"]
+    print(
+        "图片分页："
+        f"纵向缩放 {resize_report.get('height', 0)} 张；"
+        f"回填 {reflow_report['figures_reflowed']} 处；"
+        f"提前正文 {reflow_report['paragraphs_moved']} 段；"
+        "原始 Markdown 未修改。"
     )
     print(f"Word：{output_path}")
     print("日志：成功时不生成；仅在失败时写入导出失败.log.txt。")

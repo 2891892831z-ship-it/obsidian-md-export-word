@@ -91,7 +91,8 @@ var DEFAULT_FORMAT = Object.freeze({
   note_size_pt: 7.5,
   note_line_spacing: 1.5,
   formula_size_pt: 12,
-  margin_cm: 2.54
+  margin_cm: 2.54,
+  figure_reflow: true
 });
 var SIZE_OPTIONS = {
   "7.5": "\u516D\u53F7\uFF087.5 pt\uFF09",
@@ -132,7 +133,7 @@ function cloneFormat(config = DEFAULT_FORMAT) {
   return { ...DEFAULT_FORMAT, ...config };
 }
 function formatSummary(config) {
-  return `\u4E2D\u6587 ${config.east_asia_font}\uFF1B\u82F1\u6587/\u6570\u5B57 ${config.western_font}\uFF1B\u6B63\u6587 ${config.body_size_pt} pt\u3001${config.body_line_spacing} \u500D\u884C\u8DDD\u3001\u9996\u884C ${config.body_first_line_chars} \u5B57\uFF1B\u8868\u683C ${config.table_size_pt} pt\u3001${config.table_line_spacing} \u500D\u884C\u8DDD\uFF1B\u56FE\u8868\u9898 ${config.caption_size_pt} pt\uFF1B\u56FE\u8868\u6CE8 ${config.note_size_pt} pt\uFF1BA4 \u56DB\u8FB9 ${config.margin_cm} cm`;
+  return `\u4E2D\u6587 ${config.east_asia_font}\uFF1B\u82F1\u6587/\u6570\u5B57 ${config.western_font}\uFF1B\u6B63\u6587 ${config.body_size_pt} pt\u3001${config.body_line_spacing} \u500D\u884C\u8DDD\u3001\u9996\u884C ${config.body_first_line_chars} \u5B57\uFF1B\u8868\u683C ${config.table_size_pt} pt\u3001${config.table_line_spacing} \u500D\u884C\u8DDD\uFF1B\u56FE\u8868\u9898 ${config.caption_size_pt} pt\uFF1B\u56FE\u8868\u6CE8 ${config.note_size_pt} pt\uFF1BA4 \u56DB\u8FB9 ${config.margin_cm} cm\uFF1B\u56FE\u7247\u5206\u9875\u56DE\u586B ${config.figure_reflow ? "\u5F00\u542F" : "\u5173\u95ED"}`;
 }
 function visibleMarkdownHeading(text) {
   return String(text || "").trim().replace(/\s+#+\s*$/, "").replace(/[*_`~]/g, "").trim();
@@ -532,6 +533,13 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
       "\u9ED8\u8BA4\uFF1A\u56DB\u8FB9 2.54 cm",
       "margin_cm",
       MARGIN_OPTIONS
+    );
+    new import_obsidian.Setting(contentEl).setName("\u56FE\u7247\u6362\u9875\u81EA\u52A8\u56DE\u586B").setDesc(
+      "\u9ED8\u8BA4\u5F00\u542F\uFF1A\u5927\u56FE\u5728\u5F53\u524D\u9875\u653E\u4E0D\u4E0B\u65F6\uFF0C\u5C06\u56FE\u7247\u540E\u540C\u4E00\u5C0F\u8282\u7684\u8FDE\u7EED\u6B63\u6587\u63D0\u524D\u5230\u56FE\u7247\u524D\u4EE5\u586B\u8865\u7A7A\u767D\uFF1B\u4E0D\u8DE8\u6807\u9898\u3001\u8868\u683C\u3001\u516C\u5F0F\u6216\u53E6\u4E00\u5F20\u56FE\u7247\uFF0C\u4E5F\u4E0D\u4F1A\u4FEE\u6539\u539F\u59CB Markdown\u3002"
+    ).addToggle(
+      (toggle) => toggle.setValue(this.config.figure_reflow !== false).onChange((value) => {
+        this.config.figure_reflow = value;
+      })
     );
     new import_obsidian.Setting(contentEl).setName("\u65B9\u6848\u540D\u79F0\uFF08\u53EF\u9009\uFF09").setDesc("\u586B\u5199\u540E\u53EF\u4FDD\u5B58\u4E3A\u201C\u6BD5\u4E1A\u8BBA\u6587\u201D\u201C\u67D0\u671F\u520A\u201D\u7B49\u65B9\u6848\u3002").addText(
       (text) => text.setPlaceholder("\u4F8B\u5982\uFF1A\u6BD5\u4E1A\u8BBA\u6587").setValue(this.presetName).onChange((value) => {

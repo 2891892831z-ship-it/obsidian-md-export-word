@@ -70,7 +70,8 @@ const DEFAULT_FORMAT = Object.freeze({
   note_size_pt: 7.5,
   note_line_spacing: 1.5,
   formula_size_pt: 12,
-  margin_cm: 2.54
+  margin_cm: 2.54,
+  figure_reflow: true
 });
 
 const SIZE_OPTIONS = {
@@ -126,7 +127,8 @@ function formatSummary(config) {
     `首行 ${config.body_first_line_chars} 字；` +
     `表格 ${config.table_size_pt} pt、${config.table_line_spacing} 倍行距；` +
     `图表题 ${config.caption_size_pt} pt；图表注 ${config.note_size_pt} pt；` +
-    `A4 四边 ${config.margin_cm} cm`
+    `A4 四边 ${config.margin_cm} cm；` +
+    `图片分页回填 ${config.figure_reflow ? "开启" : "关闭"}`
   );
 }
 
@@ -659,6 +661,20 @@ class FormatSettingsModal extends Modal {
       "margin_cm",
       MARGIN_OPTIONS
     );
+    new Setting(contentEl)
+      .setName("图片换页自动回填")
+      .setDesc(
+        "默认开启：大图在当前页放不下时，将图片后同一小节的连续正文" +
+          "提前到图片前以填补空白；不跨标题、表格、公式或另一张图片，" +
+          "也不会修改原始 Markdown。"
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.config.figure_reflow !== false)
+          .onChange((value) => {
+            this.config.figure_reflow = value;
+          })
+      );
 
     new Setting(contentEl)
       .setName("方案名称（可选）")

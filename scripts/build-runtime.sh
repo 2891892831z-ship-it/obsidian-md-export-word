@@ -46,6 +46,8 @@ cp -R "$repo_root/runtime" "$stage/"
 rm -rf \
   "$stage_runtime/.venv" \
   "$stage_runtime/Pandoc&pandoc-crossref"
+find "$stage_runtime" -type d -name __pycache__ -prune -exec rm -rf {} +
+find "$stage_runtime" -type f -name '*.pyc' -delete
 mkdir -p "$stage_runtime/Pandoc&pandoc-crossref"
 cp "$pandoc_exe" "$stage_runtime/Pandoc&pandoc-crossref/pandoc"
 cp "$crossref_exe" \
@@ -74,6 +76,8 @@ for path in sorted(root.rglob("*")):
         not path.is_file()
         or path == manifest_path
         or ".venv" in path.parts
+        or "__pycache__" in path.parts
+        or path.suffix == ".pyc"
     ):
         continue
     relative = path.relative_to(root).as_posix()

@@ -18,6 +18,8 @@
   不覆盖源 Word、不删除 Zotero 域，Windows 与 macOS 均可使用。
 - 期刊、毕业论文等多个 `.docx` 模板可选；自定义模板不会被运行时更新覆盖。
 - 正文字体、字号、行距、缩进、标题、表格、图表题、图表注、公式和页边距可配置。
+- 大图换页时可自动用同一小节的后续正文回填前页空白；纵向超高图片会等比例
+  缩放，为图题和短图注保留空间，整个过程不修改源 Markdown。
 - 导出后自动检查公式结构、引用域、表格、图注、空白和关键 OOXML 属性。
 - Obsidian 内实时显示预检、引用、Pandoc、格式处理和自动检查进度。
 - Word 文件名默认取文章一级标题，也可在导出窗口中直接修改；同名文件自动
@@ -107,7 +109,8 @@ Windows 运行时由 `scripts/build-runtime.ps1` 构建；macOS Apple Silicon
 ## 项目状态
 
 `1.4.0` 起提供 Windows x64、macOS Apple Silicon 和 macOS Intel 三套
-运行时；`1.4.2` 起支持在 Zotero Refresh 后生成保留动态域的蓝色引文副本。
+运行时；`1.4.2` 起支持在 Zotero Refresh 后生成保留动态域的蓝色引文副本；
+`1.4.3` 起支持大图纵向限高和同小节正文分页回填。
 发布时由 GitHub Actions 在对应系统上分别执行真实导出烟雾测试，再生成同
 版本 Release 资产。Release 标签使用纯版本号，不带 `v`。
 
