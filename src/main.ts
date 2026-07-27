@@ -14,7 +14,7 @@ import * as path from "node:path";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.4.4";
+const PLUGIN_VERSION = "1.4.5";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_TARGETS = Object.freeze({
@@ -71,7 +71,7 @@ const DEFAULT_FORMAT = Object.freeze({
   note_line_spacing: 1.5,
   formula_size_pt: 12,
   margin_cm: 2.54,
-  figure_reflow: true
+  figure_reflow: false
 });
 
 const SIZE_OPTIONS = {
@@ -374,8 +374,9 @@ class FormatSettingsModal extends Modal {
     this.templateFiles = options.templateFiles.length
       ? options.templateFiles
       : [DEFAULT_TEMPLATE_FILE];
+    this.figureReflowDefault = options.figureReflowDefault === true;
     this.selectedPreset = "__default__";
-    this.config = cloneFormat();
+    this.config = this.defaultCommandFormat();
     this.templateFile = this.templateFiles.includes(DEFAULT_TEMPLATE_FILE)
       ? DEFAULT_TEMPLATE_FILE
       : this.templateFiles[0];
@@ -383,10 +384,16 @@ class FormatSettingsModal extends Modal {
     this.outputName = options.outputName || "导出文档";
   }
 
+  defaultCommandFormat() {
+    return cloneFormat({
+      figure_reflow: this.figureReflowDefault
+    });
+  }
+
   usePreset(value) {
     this.selectedPreset = value;
     if (value === "__default__") {
-      this.config = cloneFormat();
+      this.config = this.defaultCommandFormat();
       this.templateFile = this.templateFiles.includes(DEFAULT_TEMPLATE_FILE)
         ? DEFAULT_TEMPLATE_FILE
         : this.templateFiles[0];
@@ -410,7 +417,9 @@ class FormatSettingsModal extends Modal {
       new Notice(normalizedOutput.error);
       return;
     }
-    const config = useDefault ? cloneFormat() : cloneFormat(this.config);
+    const config = useDefault
+      ? this.defaultCommandFormat()
+      : cloneFormat(this.config);
     const templateFile = useDefault
       ? this.templateFiles.includes(DEFAULT_TEMPLATE_FILE)
         ? DEFAULT_TEMPLATE_FILE
@@ -476,9 +485,37 @@ class FormatSettingsModal extends Modal {
     contentEl.createEl("p", {
       text:
         "不修改任何选项时使用当前期刊模板（" +
-        formatSummary(DEFAULT_FORMAT) +
+        formatSummary(this.defaultCommandFormat()) +
         "）。"
     });
+
+    const reflowEnabled = this.config.figure_reflow === true;
+    new Setting(contentEl)
+      .setName("图片分页方式")
+      .setDesc(
+        "默认保持 Markdown 中的图片位置和图文顺序；只有选择自动回填时，" +
+          "才会把图片后同一小节的连续正文提前，以减少大图换页前的空白。"
+      )
+      .addButton((button) => {
+        button
+          .setButtonText("保持图片原位（默认）")
+          .onClick(() => {
+            this.config.figure_reflow = false;
+            this.render();
+          });
+        if (!reflowEnabled) {
+          button.setCta();
+        }
+      })
+      .addButton((button) => {
+        button.setButtonText("自动回填分页空白").onClick(() => {
+          this.config.figure_reflow = true;
+          this.render();
+        });
+        if (reflowEnabled) {
+          button.setCta();
+        }
+      });
 
     new Setting(contentEl)
       .setName("Word 文件名")
@@ -661,21 +698,6 @@ class FormatSettingsModal extends Modal {
       "margin_cm",
       MARGIN_OPTIONS
     );
-    new Setting(contentEl)
-      .setName("图片换页自动回填")
-      .setDesc(
-        "默认开启：大图在当前页放不下时，将图片后同一小节的连续正文" +
-          "提前到图片前以填补空白；不跨标题、表格、公式或另一张图片，" +
-          "也不会修改原始 Markdown。"
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.config.figure_reflow !== false)
-          .onChange((value) => {
-            this.config.figure_reflow = value;
-          })
-      );
-
     new Setting(contentEl)
       .setName("方案名称（可选）")
       .setDesc("填写后可保存为“毕业论文”“某期刊”等方案。")
@@ -1191,7 +1213,7 @@ export default class MdExportWordPlugin extends Plugin {
 
     this.addCommand({
       id: "export-current-markdown-to-word",
-      name: "Export current Markdown to Word",
+      name: "Export current Markdown to Word (keep figure positions)",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canExport = Boolean(
@@ -1201,7 +1223,30 @@ export default class MdExportWordPlugin extends Plugin {
         );
 
         if (canExport && !checking) {
-          void this.exportCurrentFile(file);
+          void this.exportCurrentFile(file, {
+            figureReflowDefault: false
+          });
+        }
+
+        return canExport;
+      }
+    });
+
+    this.addCommand({
+      id: "export-current-markdown-to-word-with-figure-reflow",
+      name: "Export current Markdown to Word (auto-fill figure page gaps)",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canExport = Boolean(
+          file &&
+          typeof file.extension === "string" &&
+          file.extension.toLowerCase() === "md"
+        );
+
+        if (canExport && !checking) {
+          void this.exportCurrentFile(file, {
+            figureReflowDefault: true
+          });
         }
 
         return canExport;
@@ -1672,14 +1717,15 @@ export default class MdExportWordPlugin extends Plugin {
     });
   }
 
-  selectFormatSettings(templateFiles, outputName) {
+  selectFormatSettings(templateFiles, outputName, options = {}) {
     return new Promise((resolve) => {
       new FormatSettingsModal(
         this.app,
         {
           presets: this.exportSettings.presets,
           templateFiles,
-          outputName
+          outputName,
+          figureReflowDefault: options.figureReflowDefault === true
         },
         resolve
       ).open();
@@ -1913,7 +1959,7 @@ export default class MdExportWordPlugin extends Plugin {
     );
   }
 
-  async exportCurrentFile(file) {
+  async exportCurrentFile(file, options = {}) {
     const exportMode = await this.selectExportMode();
     if (!exportMode) {
       new Notice("已取消 Word 导出。");
@@ -1989,7 +2035,10 @@ export default class MdExportWordPlugin extends Plugin {
 
     const formatSelection = await this.selectFormatSettings(
       templateFiles,
-      defaultOutputName
+      defaultOutputName,
+      {
+        figureReflowDefault: options.figureReflowDefault === true
+      }
     );
     if (!formatSelection) {
       new Notice("已取消 Word 导出。");

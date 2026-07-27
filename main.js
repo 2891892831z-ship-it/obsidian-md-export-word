@@ -36,7 +36,7 @@ var import_obsidian = require("obsidian");
 var import_node_child_process = require("node:child_process");
 var fs = __toESM(require("node:fs"), 1);
 var path = __toESM(require("node:path"), 1);
-var PLUGIN_VERSION = "1.4.4";
+var PLUGIN_VERSION = "1.4.5";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_TARGETS = Object.freeze({
@@ -92,7 +92,7 @@ var DEFAULT_FORMAT = Object.freeze({
   note_line_spacing: 1.5,
   formula_size_pt: 12,
   margin_cm: 2.54,
-  figure_reflow: true
+  figure_reflow: false
 });
 var SIZE_OPTIONS = {
   "7.5": "\u516D\u53F7\uFF087.5 pt\uFF09",
@@ -309,16 +309,22 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
     this.resolved = false;
     this.presets = options.presets || {};
     this.templateFiles = options.templateFiles.length ? options.templateFiles : [DEFAULT_TEMPLATE_FILE];
+    this.figureReflowDefault = options.figureReflowDefault === true;
     this.selectedPreset = "__default__";
-    this.config = cloneFormat();
+    this.config = this.defaultCommandFormat();
     this.templateFile = this.templateFiles.includes(DEFAULT_TEMPLATE_FILE) ? DEFAULT_TEMPLATE_FILE : this.templateFiles[0];
     this.presetName = "";
     this.outputName = options.outputName || "\u5BFC\u51FA\u6587\u6863";
   }
+  defaultCommandFormat() {
+    return cloneFormat({
+      figure_reflow: this.figureReflowDefault
+    });
+  }
   usePreset(value) {
     this.selectedPreset = value;
     if (value === "__default__") {
-      this.config = cloneFormat();
+      this.config = this.defaultCommandFormat();
       this.templateFile = this.templateFiles.includes(DEFAULT_TEMPLATE_FILE) ? DEFAULT_TEMPLATE_FILE : this.templateFiles[0];
       this.presetName = "";
     } else {
@@ -336,7 +342,7 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
       new import_obsidian.Notice(normalizedOutput.error);
       return;
     }
-    const config = useDefault ? cloneFormat() : cloneFormat(this.config);
+    const config = useDefault ? this.defaultCommandFormat() : cloneFormat(this.config);
     const templateFile = useDefault ? this.templateFiles.includes(DEFAULT_TEMPLATE_FILE) ? DEFAULT_TEMPLATE_FILE : this.templateFiles[0] : this.templateFile;
     const requestedName = this.presetName.trim();
     if (savePreset && !requestedName) {
@@ -381,7 +387,27 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
     contentEl.style.overflowY = "auto";
     contentEl.createEl("h2", { text: "\u8BBE\u7F6E Word \u5BFC\u51FA\u683C\u5F0F" });
     contentEl.createEl("p", {
-      text: "\u4E0D\u4FEE\u6539\u4EFB\u4F55\u9009\u9879\u65F6\u4F7F\u7528\u5F53\u524D\u671F\u520A\u6A21\u677F\uFF08" + formatSummary(DEFAULT_FORMAT) + "\uFF09\u3002"
+      text: "\u4E0D\u4FEE\u6539\u4EFB\u4F55\u9009\u9879\u65F6\u4F7F\u7528\u5F53\u524D\u671F\u520A\u6A21\u677F\uFF08" + formatSummary(this.defaultCommandFormat()) + "\uFF09\u3002"
+    });
+    const reflowEnabled = this.config.figure_reflow === true;
+    new import_obsidian.Setting(contentEl).setName("\u56FE\u7247\u5206\u9875\u65B9\u5F0F").setDesc(
+      "\u9ED8\u8BA4\u4FDD\u6301 Markdown \u4E2D\u7684\u56FE\u7247\u4F4D\u7F6E\u548C\u56FE\u6587\u987A\u5E8F\uFF1B\u53EA\u6709\u9009\u62E9\u81EA\u52A8\u56DE\u586B\u65F6\uFF0C\u624D\u4F1A\u628A\u56FE\u7247\u540E\u540C\u4E00\u5C0F\u8282\u7684\u8FDE\u7EED\u6B63\u6587\u63D0\u524D\uFF0C\u4EE5\u51CF\u5C11\u5927\u56FE\u6362\u9875\u524D\u7684\u7A7A\u767D\u3002"
+    ).addButton((button) => {
+      button.setButtonText("\u4FDD\u6301\u56FE\u7247\u539F\u4F4D\uFF08\u9ED8\u8BA4\uFF09").onClick(() => {
+        this.config.figure_reflow = false;
+        this.render();
+      });
+      if (!reflowEnabled) {
+        button.setCta();
+      }
+    }).addButton((button) => {
+      button.setButtonText("\u81EA\u52A8\u56DE\u586B\u5206\u9875\u7A7A\u767D").onClick(() => {
+        this.config.figure_reflow = true;
+        this.render();
+      });
+      if (reflowEnabled) {
+        button.setCta();
+      }
     });
     new import_obsidian.Setting(contentEl).setName("Word \u6587\u4EF6\u540D").setDesc(
       "\u9ED8\u8BA4\u8BFB\u53D6 Markdown \u7684\u6587\u7AE0\u4E00\u7EA7\u6807\u9898\uFF1B\u53EF\u76F4\u63A5\u4FEE\u6539\uFF0C\u65E0\u9700\u8F93\u5165 .docx\uFF1B\u540C\u540D\u6587\u4EF6\u81EA\u52A8\u6DFB\u52A0\u65F6\u95F4\u6233\u3002"
@@ -533,13 +559,6 @@ var FormatSettingsModal = class extends import_obsidian.Modal {
       "\u9ED8\u8BA4\uFF1A\u56DB\u8FB9 2.54 cm",
       "margin_cm",
       MARGIN_OPTIONS
-    );
-    new import_obsidian.Setting(contentEl).setName("\u56FE\u7247\u6362\u9875\u81EA\u52A8\u56DE\u586B").setDesc(
-      "\u9ED8\u8BA4\u5F00\u542F\uFF1A\u5927\u56FE\u5728\u5F53\u524D\u9875\u653E\u4E0D\u4E0B\u65F6\uFF0C\u5C06\u56FE\u7247\u540E\u540C\u4E00\u5C0F\u8282\u7684\u8FDE\u7EED\u6B63\u6587\u63D0\u524D\u5230\u56FE\u7247\u524D\u4EE5\u586B\u8865\u7A7A\u767D\uFF1B\u4E0D\u8DE8\u6807\u9898\u3001\u8868\u683C\u3001\u516C\u5F0F\u6216\u53E6\u4E00\u5F20\u56FE\u7247\uFF0C\u4E5F\u4E0D\u4F1A\u4FEE\u6539\u539F\u59CB Markdown\u3002"
-    ).addToggle(
-      (toggle) => toggle.setValue(this.config.figure_reflow !== false).onChange((value) => {
-        this.config.figure_reflow = value;
-      })
     );
     new import_obsidian.Setting(contentEl).setName("\u65B9\u6848\u540D\u79F0\uFF08\u53EF\u9009\uFF09").setDesc("\u586B\u5199\u540E\u53EF\u4FDD\u5B58\u4E3A\u201C\u6BD5\u4E1A\u8BBA\u6587\u201D\u201C\u67D0\u671F\u520A\u201D\u7B49\u65B9\u6848\u3002").addText(
       (text) => text.setPlaceholder("\u4F8B\u5982\uFF1A\u6BD5\u4E1A\u8BBA\u6587").setValue(this.presetName).onChange((value) => {
@@ -940,14 +959,32 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
     this.addSettingTab(new MdExportWordSettingTab(this.app, this));
     this.addCommand({
       id: "export-current-markdown-to-word",
-      name: "Export current Markdown to Word",
+      name: "Export current Markdown to Word (keep figure positions)",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         const canExport = Boolean(
           file && typeof file.extension === "string" && file.extension.toLowerCase() === "md"
         );
         if (canExport && !checking) {
-          void this.exportCurrentFile(file);
+          void this.exportCurrentFile(file, {
+            figureReflowDefault: false
+          });
+        }
+        return canExport;
+      }
+    });
+    this.addCommand({
+      id: "export-current-markdown-to-word-with-figure-reflow",
+      name: "Export current Markdown to Word (auto-fill figure page gaps)",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canExport = Boolean(
+          file && typeof file.extension === "string" && file.extension.toLowerCase() === "md"
+        );
+        if (canExport && !checking) {
+          void this.exportCurrentFile(file, {
+            figureReflowDefault: true
+          });
         }
         return canExport;
       }
@@ -1341,14 +1378,15 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       new ExportModeModal(this.app, resolve).open();
     });
   }
-  selectFormatSettings(templateFiles, outputName) {
+  selectFormatSettings(templateFiles, outputName, options = {}) {
     return new Promise((resolve) => {
       new FormatSettingsModal(
         this.app,
         {
           presets: this.exportSettings.presets,
           templateFiles,
-          outputName
+          outputName,
+          figureReflowDefault: options.figureReflowDefault === true
         },
         resolve
       ).open();
@@ -1545,7 +1583,7 @@ ${launchError}
       8e3
     );
   }
-  async exportCurrentFile(file) {
+  async exportCurrentFile(file, options = {}) {
     const exportMode = await this.selectExportMode();
     if (!exportMode) {
       new import_obsidian.Notice("\u5DF2\u53D6\u6D88 Word \u5BFC\u51FA\u3002");
@@ -1607,7 +1645,10 @@ ${launchError}
     }
     const formatSelection = await this.selectFormatSettings(
       templateFiles,
-      defaultOutputName
+      defaultOutputName,
+      {
+        figureReflowDefault: options.figureReflowDefault === true
+      }
     );
     if (!formatSelection) {
       new import_obsidian.Notice("\u5DF2\u53D6\u6D88 Word \u5BFC\u51FA\u3002");

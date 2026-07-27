@@ -219,6 +219,10 @@ def main() -> int:
     )
     figure_reflow_word = output_dir / "figure-reflow.docx"
     figure_reflow_log = output_dir / "figure-reflow-failure.log.txt"
+    figure_reflow_default_word = output_dir / "figure-reflow-default.docx"
+    figure_reflow_default_log = (
+        output_dir / "figure-reflow-default-failure.log.txt"
+    )
     recolor_source = output_dir / "zotero-color-source.docx"
     recolor_word = output_dir / "zotero-color-output.docx"
     recolor_log = output_dir / "zotero-color-failure.log.txt"
@@ -234,6 +238,8 @@ def main() -> int:
         strict_english_caption_word,
         figure_reflow_word,
         figure_reflow_log,
+        figure_reflow_default_word,
+        figure_reflow_default_log,
         recolor_source,
         recolor_word,
         recolor_log,
@@ -360,8 +366,37 @@ def main() -> int:
         )
 
         env.pop("MD_EXPORT_WORD_OUTPUT", None)
-        env["MD_EXPORT_WORD_FAILURE_LOG"] = str(figure_reflow_log)
+        env["MD_EXPORT_WORD_FAILURE_LOG"] = str(
+            figure_reflow_default_log
+        )
         reflow_source_hash = sha256_file(figure_reflow)
+        code = run_export(
+            Path(sys.executable),
+            exporter,
+            figure_reflow,
+            env,
+            "--output",
+            str(figure_reflow_default_word),
+        )
+        require(
+            code == 0 and figure_reflow_default_word.is_file(),
+            "Default figure-position Word missing",
+        )
+        default_reflow = figure_reflow_inventory(
+            figure_reflow_default_word
+        )
+        require(
+            default_reflow["image_index"]
+            < default_reflow["moved_index"],
+            "Default export unexpectedly moved prose before the figure",
+        )
+        require(
+            not figure_reflow_default_log.exists(),
+            "Default figure-position export generated a failure log",
+        )
+
+        env["MD_EXPORT_WORD_FAILURE_LOG"] = str(figure_reflow_log)
+        env["MD_EXPORT_WORD_FORMAT_JSON"] = '{"figure_reflow":true}'
         code = run_export(
             Path(sys.executable),
             exporter,
@@ -408,6 +443,7 @@ def main() -> int:
             "Figure-reflow export generated a failure log",
         )
 
+        env.pop("MD_EXPORT_WORD_FORMAT_JSON", None)
         env.pop("MD_EXPORT_WORD_OUTPUT", None)
         env["MD_EXPORT_WORD_FAILURE_LOG"] = str(failure_log)
         code = run_export(

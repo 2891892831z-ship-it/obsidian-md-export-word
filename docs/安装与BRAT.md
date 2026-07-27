@@ -153,9 +153,10 @@ MD Export Word: Check Word export runtime
 
 1. 在 Obsidian 中打开一个 `.md` 文件；
 2. `Ctrl+P`；
-3. 运行 `MD Export Word: Export current Markdown to Word`；
+3. 运行
+   `MD Export Word: Export current Markdown to Word (keep figure positions)`；
 4. 选择严格模式或兼容模式；
-5. 选择模板并确认格式；
+5. 在窗口顶部选择保持图片原位或自动回填分页空白，再选择模板并确认格式；
 6. 等待右上角完成提示；
 7. 成功后 Word 自动打开，并保存在 Markdown 同目录；
 8. 只有失败时才会在同目录生成 `导出失败.log.txt`。

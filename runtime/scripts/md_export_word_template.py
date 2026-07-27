@@ -89,7 +89,7 @@ DEFAULT_FORMAT_CONFIG: dict[str, Any] = {
     "note_line_spacing": 1.5,
     "formula_size_pt": 12.0,
     "margin_cm": 2.54,
-    "figure_reflow": True,
+    "figure_reflow": False,
 }
 
 FORMAT_NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
@@ -2553,7 +2553,7 @@ def reflow_large_figures(
     Only whole top-level body paragraphs move. The first heading, table,
     equation, note, caption, or another picture is a hard boundary.
     """
-    if not bool(format_config.get("figure_reflow", True)):
+    if not bool(format_config.get("figure_reflow", False)):
         return {
             "enabled": False,
             "figures_reflowed": 0,
