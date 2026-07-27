@@ -58,6 +58,9 @@ def main() -> int:
         workspace / "runtime" / "scripts" / "md_export_word_template.py"
     )
     smoke = workspace / "tests" / "fixtures" / "smoke.md"
+    strict_english_caption = (
+        workspace / "tests" / "fixtures" / "strict-english-caption.md"
+    )
     invalid = workspace / "tests" / "fixtures" / "failure-invalid.md"
     output_dir = workspace / "dist"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -70,8 +73,10 @@ def main() -> int:
     default_word = smoke.parent / "运行时烟雾测试.docx"
     legacy_word = smoke.parent / "smoke-编辑审阅稿.docx"
     custom_word = output_dir / "custom-output-name.docx"
-    strict_word = output_dir / "strict-english-captions.docx"
     strict_log = output_dir / "strict-english-captions.log.txt"
+    strict_english_caption_word = (
+        output_dir / "strict-english-caption.docx"
+    )
     failure_word = output_dir / "must-not-exist.docx"
     failure_log = output_dir / "expected-failure.log.txt"
     generated = [
@@ -80,8 +85,8 @@ def main() -> int:
         default_word,
         legacy_word,
         custom_word,
-        strict_word,
         strict_log,
+        strict_english_caption_word,
         failure_word,
         failure_log,
     ]
@@ -153,15 +158,15 @@ def main() -> int:
         code = run_export(
             Path(sys.executable),
             exporter,
-            smoke,
+            strict_english_caption,
             env,
             "--output",
-            str(strict_word),
+            str(strict_english_caption_word),
             mode="strict",
         )
         require(
-            code == 0 and strict_word.is_file(),
-            "Strict mode rejected English Fig./Table captions",
+            code == 0 and strict_english_caption_word.is_file(),
+            "Strict mode rejected a configured English table caption",
         )
         require(
             not strict_log.exists(),

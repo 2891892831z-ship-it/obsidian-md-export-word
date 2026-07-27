@@ -73,12 +73,27 @@ Obsidian 嵌入：
 
 ## 图题、表题与注释
 
-图名和表名的编号后使用空格，不使用中文冒号：
+中文稿可直接使用默认题名前缀。图名和表名的编号后使用空格，不使用中文冒号：
 
 ```text
 图 6 一级相对有利区带……
 表 3 有利区评价结果
 ```
+
+英文稿可在 frontmatter 中配置 pandoc-crossref 题名与交叉引用前缀：
+
+```yaml
+---
+figureTitle: Fig.
+tableTitle: Table
+figPrefix: Fig.
+tblPrefix: Table
+---
+```
+
+导出的题名形如 `Fig. 1: Caption` 和 `Table 1: Caption`。严格模式与兼容
+模式均接受中文、标准英文以及本次元数据中明确配置的题名前缀；两种模式的区别
+只在于 Zotero 缺失 citekey 的处理方式。
 
 以下开头均识别为注释：
 
