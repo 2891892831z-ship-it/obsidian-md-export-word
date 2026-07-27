@@ -8,6 +8,7 @@ const errors = [];
 
 const manifest = readJson("manifest.json");
 const packageJson = readJson("package.json");
+const packageLock = readJson("package-lock.json");
 const versions = readJson("versions.json");
 const runtime = readJson("runtime/runtime-manifest.json");
 
@@ -17,6 +18,12 @@ if (manifest.version !== packageJson.version) {
 if (manifest.version !== runtime.version) {
   errors.push("manifest.json 与 runtime-manifest.json 版本不一致");
 }
+if (
+  manifest.version !== packageLock.version ||
+  manifest.version !== packageLock.packages?.[""]?.version
+) {
+  errors.push("manifest.json 与 package-lock.json 版本不一致");
+}
 if (versions[manifest.version] !== manifest.minAppVersion) {
   errors.push("versions.json 缺少当前版本或最低 Obsidian 版本不一致");
 }
@@ -24,8 +31,26 @@ if (!/^[a-z0-9-]+$/.test(manifest.id)) {
   errors.push("manifest.id 只能使用小写字母、数字和连字符");
 }
 
+const escapedVersion = manifest.version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const sourceVersionPattern = new RegExp(
+  `PLUGIN_VERSION\\s*=\\s*["']${escapedVersion}["']`
+);
+if (!sourceVersionPattern.test(fs.readFileSync("src/main.ts", "utf8"))) {
+  errors.push("src/main.ts 的 PLUGIN_VERSION 与 manifest.json 不一致");
+}
+if (!sourceVersionPattern.test(fs.readFileSync("main.js", "utf8"))) {
+  errors.push("main.js 尚未按当前 manifest.json 版本重新构建");
+}
+const citationVersion = fs
+  .readFileSync("CITATION.cff", "utf8")
+  .match(/^version:\s*["']?([^"'\s]+)["']?\s*$/m)?.[1];
+if (citationVersion !== manifest.version) {
+  errors.push("CITATION.cff 与 manifest.json 版本不一致");
+}
+
 const required = [
   "src/main.ts",
+  "src/runtime-install.ts",
   "main.js",
   "manifest.json",
   "styles.css",
@@ -40,6 +65,8 @@ const required = [
   "runtime/zotero.lua",
   "runtime/Word-Template/导出格式模板.docx",
   "README.md",
+  "scripts/test-runtime-install.mjs",
+  "tests/runtime-install.test.ts",
   "LICENSE"
 ];
 for (const relative of required) {

@@ -1,6 +1,6 @@
 {
   "name": "MD Export Word Runtime",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "platform": "multi",
   "python": ">=3.10",
   "components": {

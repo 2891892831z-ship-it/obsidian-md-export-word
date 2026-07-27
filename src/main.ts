@@ -11,12 +11,29 @@ import {
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+  RUNTIME_DOWNLOAD_TIMEOUT_MS,
+  RuntimeInstallBusyError,
+  acquireRuntimeInstallLock,
+  createRuntimeInstallWorkspace,
+  formatElapsed,
+  formatMegabytes,
+  releaseRuntimeInstallLock,
+  removeTreeBestEffort,
+  runSingleFlight,
+  validateRuntimeArchive,
+  withTimeout,
+  writeRuntimeArchive
+} from "./runtime-install";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.4.5";
+const PLUGIN_VERSION = "1.4.6";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
+const RUNTIME_INSTALL_REGISTRY_KEY = Symbol.for(
+  "md-export-word.runtime-install-registry"
+);
 const RUNTIME_TARGETS = Object.freeze({
   "windows-x64": {
     id: "windows-x64",
@@ -24,6 +41,7 @@ const RUNTIME_TARGETS = Object.freeze({
     nodePlatform: "win32",
     nodeArch: "x64",
     asset: "md-export-word-runtime-windows-x64.zip",
+    sizeHint: "约 64 MB",
     pandocFile: "pandoc.exe",
     crossrefFile: "pandoc-crossref.exe",
     pythonParts: [".venv", "Scripts", "python.exe"]
@@ -34,6 +52,7 @@ const RUNTIME_TARGETS = Object.freeze({
     nodePlatform: "darwin",
     nodeArch: "arm64",
     asset: "md-export-word-runtime-macos-arm64.zip",
+    sizeHint: "约 73 MB",
     pandocFile: "pandoc",
     crossrefFile: "pandoc-crossref",
     pythonParts: [".venv", "bin", "python"]
@@ -44,6 +63,7 @@ const RUNTIME_TARGETS = Object.freeze({
     nodePlatform: "darwin",
     nodeArch: "x64",
     asset: "md-export-word-runtime-macos-x64.zip",
+    sizeHint: "约 34 MB",
     pandocFile: "pandoc",
     crossrefFile: "pandoc-crossref",
     pythonParts: [".venv", "bin", "python"]
@@ -106,6 +126,13 @@ const MARGIN_OPTIONS = {
   "2.54": "四边 2.54 cm",
   "3": "四边 3.00 cm"
 };
+
+function runtimeInstallRegistry() {
+  if (!globalThis[RUNTIME_INSTALL_REGISTRY_KEY]) {
+    globalThis[RUNTIME_INSTALL_REGISTRY_KEY] = Object.create(null);
+  }
+  return globalThis[RUNTIME_INSTALL_REGISTRY_KEY];
+}
 
 function detectedRuntimeTargetId() {
   const exact = Object.values(RUNTIME_TARGETS).find(
@@ -1123,6 +1150,7 @@ class MdExportWordSettingTab extends PluginSettingTab {
 
   display() {
     const { containerEl } = this;
+    const runtimeInstalling = this.plugin.isRuntimeInstalling();
     containerEl.empty();
     containerEl.createEl("h2", { text: "MD Export Word" });
 
@@ -1131,15 +1159,16 @@ class MdExportWordSettingTab extends PluginSettingTab {
       .setDesc(
         "通常由正式 Release 自动写入；仅在自建分支或私有仓库中需要修改。"
       )
-      .addText((text) =>
+      .addText((text) => {
         text
           .setPlaceholder("owner/obsidian-md-export-word")
           .setValue(this.plugin.getReleaseRepository())
+          .setDisabled(runtimeInstalling)
           .onChange(async (value) => {
             this.plugin.exportSettings.repository = value.trim();
             await this.plugin.saveData(this.plugin.exportSettings);
-          })
-      );
+          });
+      });
 
     new Setting(containerEl)
       .setName("导出成功后自动打开 Word")
@@ -1174,6 +1203,7 @@ class MdExportWordSettingTab extends PluginSettingTab {
         }
         dropdown
           .setValue(this.plugin.exportSettings.runtimePlatform || "auto")
+          .setDisabled(runtimeInstalling)
           .onChange(async (value) => {
             this.plugin.exportSettings.runtimePlatform = value;
             await this.plugin.saveData(this.plugin.exportSettings);
@@ -1183,22 +1213,35 @@ class MdExportWordSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Word 导出运行时")
-      .setDesc(this.plugin.runtimeStatusText())
-      .addButton((button) =>
-        button
-          .setButtonText("安装或修复")
-          .setCta()
-          .onClick(async () => {
-            await this.plugin.installRuntime();
-            this.display();
-          })
+      .setDesc(
+        runtimeInstalling
+          ? "正在安装运行时。当前任务完成前无需重复操作。"
+          : this.plugin.runtimeStatusText()
       )
-      .addButton((button) =>
-        button.setButtonText("环境自检").onClick(async () => {
-          await this.plugin.runDoctor();
-          this.display();
-        })
-      );
+      .addButton((button) => {
+        button
+          .setButtonText(runtimeInstalling ? "正在安装..." : "安装或修复")
+          .setCta()
+          .setDisabled(runtimeInstalling)
+          .onClick(async () => {
+            const installPromise = this.plugin.installRuntime();
+            this.display();
+            try {
+              await installPromise;
+            } finally {
+              this.display();
+            }
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText("环境自检")
+          .setDisabled(runtimeInstalling)
+          .onClick(async () => {
+            await this.plugin.runDoctor();
+            this.display();
+          });
+      });
   }
 }
 
@@ -1401,12 +1444,14 @@ export default class MdExportWordPlugin extends Plugin {
     return stamped;
   }
 
-  runtimeStatus() {
+  runtimeStatus(
+    target = this.getRuntimeTarget(),
+    expectedVersion = this.manifest.version
+  ) {
     const root = this.getRuntimeRoot();
     if (!root) {
       return { ready: false, message: "当前知识库不是本地文件系统。" };
     }
-    const target = this.getRuntimeTarget();
     const compatibilityError = this.runtimeCompatibilityError(target);
     if (compatibilityError) {
       return { ready: false, message: compatibilityError };
@@ -1435,12 +1480,12 @@ export default class MdExportWordPlugin extends Plugin {
       const manifest = JSON.parse(
         fs.readFileSync(runtimePaths.manifest, "utf8")
       );
-      if (manifest.version !== this.manifest.version) {
+      if (manifest.version !== expectedVersion) {
         return {
           ready: false,
           message:
             `运行时版本 ${manifest.version || "unknown"} 与插件版本 ` +
-            `${this.manifest.version} 不一致。`
+            `${expectedVersion} 不一致。`
         };
       }
       if (manifest.platform !== target.id) {
@@ -1478,7 +1523,27 @@ export default class MdExportWordPlugin extends Plugin {
     });
   }
 
-  async installRuntime() {
+  isRuntimeInstalling() {
+    const key = this.getPluginRoot() || this.manifest.id;
+    return Boolean(runtimeInstallRegistry()[key]);
+  }
+
+  installRuntime() {
+    const key = this.getPluginRoot() || this.manifest.id;
+    return runSingleFlight(
+      runtimeInstallRegistry(),
+      key,
+      () => this.installRuntimeOnce(),
+      () => {
+        new Notice(
+          "Word 导出运行时正在安装，请等待当前任务完成，无需重复点击。",
+          8000
+        );
+      }
+    );
+  }
+
+  async installRuntimeOnce() {
     const target = this.getRuntimeTarget();
     const compatibilityError = this.runtimeCompatibilityError(target);
     if (compatibilityError) {
@@ -1492,48 +1557,115 @@ export default class MdExportWordPlugin extends Plugin {
     }
 
     let repository = this.getReleaseRepository();
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-      repository = await this.askRepository(repository);
-      if (!repository) {
-        new Notice("已取消运行时安装。");
-        return false;
-      }
+    try {
       if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-        new Notice("GitHub 仓库格式不正确，应为 owner/repository。", 10000);
-        return false;
+        repository = await this.askRepository(repository);
+        if (!repository) {
+          new Notice("已取消运行时安装。");
+          return false;
+        }
+        if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+          new Notice("GitHub 仓库格式不正确，应为 owner/repository。", 10000);
+          return false;
+        }
+        this.exportSettings.repository = repository;
+        await this.saveData(this.exportSettings);
       }
-      this.exportSettings.repository = repository;
-      await this.saveData(this.exportSettings);
+    } catch (error) {
+      new Notice(`无法保存运行时仓库设置：${error.message}`, 12000);
+      return false;
     }
 
     const version = this.manifest.version || PLUGIN_VERSION;
     const url =
       `https://github.com/${repository}/releases/download/` +
       `${version}/${target.asset}`;
-    const zipPath = path.join(
-      pluginRoot,
-      `.runtime-download-${target.id}.zip`
-    );
-    const stagePath = path.join(pluginRoot, ".runtime-stage");
     const runtimePath = path.join(pluginRoot, "runtime");
-    const backupPath = path.join(pluginRoot, ".runtime-backup");
-    let newRuntimeInstalled = false;
+    let workspace = null;
+    let installLock = null;
+    let progressNotice = null;
+    let progressTimer = null;
+    let progressStageCode = "prepare";
+    let progressStage = "准备安装运行时";
+    let progressDetail = "";
+    const startedAt = Date.now();
+    let oldRuntimeBackedUp = false;
+    let newRuntimeActivated = false;
+    let committed = false;
+    let rollbackSucceeded = false;
+
+    const refreshProgress = () => {
+      if (!progressNotice) {
+        return;
+      }
+      const elapsed = formatElapsed(Date.now() - startedAt);
+      progressNotice.setMessage(
+        `${progressStage}\n已用时 ${elapsed}。${progressDetail}`
+      );
+    };
+    const setProgress = (stageCode, stage, detail = "") => {
+      progressStageCode = stageCode;
+      progressStage = stage;
+      progressDetail = detail;
+      refreshProgress();
+    };
 
     try {
-      new Notice(
-        `正在下载 ${target.label} Word 导出运行时 ${version}…`,
-        8000
+      installLock = acquireRuntimeInstallLock(pluginRoot);
+      workspace = createRuntimeInstallWorkspace(
+        pluginRoot,
+        target.id,
+        target.asset
       );
-      const response = await requestUrl({ url, method: "GET" });
+      progressNotice = new Notice("", 0);
+      setProgress(
+        "download",
+        `正在下载 ${target.label} Word 导出运行时 ${version}`,
+        `安装包${target.sizeHint}，GitHub 网络较慢时可能需要数分钟；` +
+          "请勿重复点击。"
+      );
+      progressTimer = window.setInterval(refreshProgress, 5000);
+      this.registerInterval(progressTimer);
+
+      const response = await withTimeout(
+        requestUrl({
+          url,
+          method: "GET",
+          throw: false
+        }),
+        RUNTIME_DOWNLOAD_TIMEOUT_MS,
+        () =>
+          new Error(
+            "下载超过 5 分钟，插件已停止等待。请检查 GitHub 网络后重试"
+          )
+      );
       if (response.status < 200 || response.status >= 300) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(
+          `GitHub Release 返回 HTTP ${response.status}，` +
+            `请确认 ${version} 已发布且包含 ${target.asset}`
+        );
       }
-      fs.writeFileSync(zipPath, Buffer.from(response.arrayBuffer));
 
-      fs.rmSync(stagePath, { recursive: true, force: true });
-      fs.rmSync(backupPath, { recursive: true, force: true });
-      fs.mkdirSync(stagePath, { recursive: true });
+      setProgress(
+        "validate-download",
+        "正在校验下载内容",
+        "正在确认 ZIP 格式和本地写入大小。"
+      );
+      const archive = validateRuntimeArchive(response.arrayBuffer);
+      const archiveSize = writeRuntimeArchive(workspace, archive);
+      if (
+        !fs.existsSync(workspace.zipPath) ||
+        fs.statSync(workspace.zipPath).size !== archiveSize
+      ) {
+        throw new Error("运行时 ZIP 在解压前丢失或大小发生变化");
+      }
 
+      fs.mkdirSync(workspace.stagePath, { recursive: true });
+      setProgress(
+        "extract",
+        `下载完成（${formatMegabytes(archiveSize)}），正在解压`,
+        "请保持 Obsidian 运行。"
+      );
       const extractResult =
         process.platform === "win32"
           ? await runProcess(
@@ -1545,14 +1677,14 @@ export default class MdExportWordPlugin extends Plugin {
                 "-Command",
                 "Expand-Archive -LiteralPath $args[0] " +
                   "-DestinationPath $args[1] -Force",
-                zipPath,
-                stagePath
+                workspace.zipPath,
+                workspace.stagePath
               ],
               { cwd: pluginRoot }
             )
           : await runProcess(
               "/usr/bin/ditto",
-              ["-x", "-k", zipPath, stagePath],
+              ["-x", "-k", workspace.zipPath, workspace.stagePath],
               { cwd: pluginRoot }
             );
       if (extractResult.code !== 0) {
@@ -1562,7 +1694,12 @@ export default class MdExportWordPlugin extends Plugin {
         );
       }
 
-      const payloadPath = path.join(stagePath, "runtime");
+      setProgress(
+        "validate-package",
+        "正在校验运行时包",
+        "正在检查版本和 CPU 平台。"
+      );
+      const payloadPath = path.join(workspace.stagePath, "runtime");
       const payloadManifestPath = path.join(
         payloadPath,
         RUNTIME_MANIFEST
@@ -1583,12 +1720,23 @@ export default class MdExportWordPlugin extends Plugin {
         );
       }
 
+      setProgress(
+        "activate",
+        "正在替换旧运行时",
+        "原运行时会先备份，失败时自动恢复。"
+      );
       if (fs.existsSync(runtimePath)) {
-        fs.renameSync(runtimePath, backupPath);
+        fs.renameSync(runtimePath, workspace.backupPath);
+        oldRuntimeBackedUp = true;
       }
       fs.renameSync(payloadPath, runtimePath);
-      newRuntimeInstalled = true;
+      newRuntimeActivated = true;
 
+      setProgress(
+        "setup",
+        "正在配置私有 Python 环境",
+        "首次创建虚拟环境或访问 PyPI 时可能需要几分钟。"
+      );
       let setupResult;
       if (process.platform === "win32") {
         const setupPath = path.join(
@@ -1641,30 +1789,91 @@ export default class MdExportWordPlugin extends Plugin {
         );
       }
 
-      const status = this.runtimeStatus();
+      setProgress("doctor", "正在执行最终环境自检", "即将完成安装。");
+      const status = this.runtimeStatus(target, version);
       if (!status.ready) {
         throw new Error(status.message);
       }
       this.ensureTemplateLibrary();
-      fs.rmSync(backupPath, { recursive: true, force: true });
-      fs.rmSync(stagePath, { recursive: true, force: true });
-      fs.rmSync(zipPath, { force: true });
+      committed = true;
       new Notice(`Word 导出运行时安装完成：${status.message}`, 10000);
       return true;
     } catch (error) {
-      if (newRuntimeInstalled) {
-        fs.rmSync(runtimePath, { recursive: true, force: true });
+      if (committed) {
+        console.warn("运行时已安装，但完成提示失败：", error);
+        return true;
       }
-      if (fs.existsSync(backupPath)) {
-        fs.renameSync(backupPath, runtimePath);
+
+      let failureMessage =
+        error instanceof Error ? error.message : String(error);
+      try {
+        if (newRuntimeActivated && fs.existsSync(runtimePath)) {
+          fs.rmSync(runtimePath, { recursive: true, force: true });
+        }
+        if (oldRuntimeBackedUp) {
+          if (!workspace || !fs.existsSync(workspace.backupPath)) {
+            throw new Error("旧运行时备份不存在");
+          }
+          if (fs.existsSync(runtimePath)) {
+            fs.rmSync(runtimePath, { recursive: true, force: true });
+          }
+          fs.renameSync(workspace.backupPath, runtimePath);
+        }
+        rollbackSucceeded = true;
+      } catch (rollbackError) {
+        failureMessage +=
+          "；自动恢复旧运行时失败：" +
+          (rollbackError instanceof Error
+            ? rollbackError.message
+            : String(rollbackError));
       }
-      fs.rmSync(stagePath, { recursive: true, force: true });
-      fs.rmSync(zipPath, { force: true });
+
+      if (error instanceof RuntimeInstallBusyError) {
+        new Notice(error.message, 10000);
+        return false;
+      }
+
+      const downloadFailure = [
+        "download",
+        "validate-download"
+      ].includes(progressStageCode);
+      const retryHint = downloadFailure
+        ? "请确认浏览器能打开该版本的 GitHub Release，网络恢复后只重试一次。"
+        : "请重新执行“安装或修复”；若仍失败，运行环境自检并查看故障排查文档。";
+      const backupAvailable =
+        !rollbackSucceeded &&
+        oldRuntimeBackedUp &&
+        workspace &&
+        fs.existsSync(workspace.backupPath);
+      const backupHint = backupAvailable
+        ? ` 旧运行时备份保留在：${workspace.backupPath}。`
+        : !rollbackSucceeded
+          ? " 自动清理失败的新运行时未完成，请完全退出 Obsidian 后再修复。"
+          : "";
       new Notice(
-        `运行时安装失败：${error.message}。请查看 docs/故障排查.md。`,
-        15000
+        `运行时安装失败（${progressStage}）：${failureMessage}。` +
+          `${retryHint}${backupHint}`,
+        20000
       );
       return false;
+    } finally {
+      if (progressTimer !== null) {
+        window.clearInterval(progressTimer);
+      }
+      progressNotice?.hide();
+      if (committed || rollbackSucceeded) {
+        const cleanupError = removeTreeBestEffort(workspace?.root || null);
+        if (cleanupError) {
+          console.warn(
+            "运行时安装已结束，但临时目录清理失败：",
+            cleanupError
+          );
+        }
+      }
+      const lockError = releaseRuntimeInstallLock(installLock);
+      if (lockError) {
+        console.warn("运行时安装锁清理失败：", lockError);
+      }
     }
   }
 

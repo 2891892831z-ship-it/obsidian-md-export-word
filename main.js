@@ -34,11 +34,213 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_node_child_process = require("node:child_process");
+var fs2 = __toESM(require("node:fs"), 1);
+var path2 = __toESM(require("node:path"), 1);
+
+// src/runtime-install.ts
 var fs = __toESM(require("node:fs"), 1);
 var path = __toESM(require("node:path"), 1);
-var PLUGIN_VERSION = "1.4.5";
+var RUNTIME_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1e3;
+var RUNTIME_INSTALL_LOCK_INITIALIZATION_GRACE_MS = 10 * 1e3;
+function runSingleFlight(owner, key, task, onDuplicate) {
+  const current = owner[key];
+  if (current) {
+    onDuplicate?.();
+    return current;
+  }
+  const work = Promise.resolve().then(task);
+  const tracked = work.finally(() => {
+    if (owner[key] === tracked) {
+      owner[key] = null;
+    }
+  });
+  owner[key] = tracked;
+  return tracked;
+}
+function withTimeout(promise, timeoutMs, createError, timers = globalThis) {
+  let timeoutId;
+  const timeout = new Promise((_resolve, reject) => {
+    timeoutId = timers.setTimeout(() => reject(createError()), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId !== void 0) {
+      timers.clearTimeout(timeoutId);
+    }
+  });
+}
+var RuntimeInstallBusyError = class extends Error {
+  constructor() {
+    super(
+      "\u68C0\u6D4B\u5230\u53E6\u4E00\u4E2A\u8FD0\u884C\u65F6\u5B89\u88C5\u4EFB\u52A1\u4ECD\u5728\u6267\u884C\uFF0C\u8BF7\u7B49\u5F85\u5176\u5B8C\u6210\u540E\u518D\u8BD5"
+    );
+    this.name = "RuntimeInstallBusyError";
+  }
+};
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code !== "ESRCH";
+  }
+}
+function acquireRuntimeInstallLock(pluginRoot, now = Date.now(), isProcessAlive = processIsAlive) {
+  const lockPath = path.join(pluginRoot, ".runtime-install.lock");
+  const token = `${process.pid}-${now}-` + Math.random().toString(36).slice(2);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const descriptor = fs.openSync(lockPath, "wx");
+      let writeError = null;
+      try {
+        fs.writeFileSync(
+          descriptor,
+          JSON.stringify({
+            token,
+            pid: process.pid,
+            createdAt: now
+          }),
+          "utf8"
+        );
+      } catch (error) {
+        writeError = error;
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      if (writeError) {
+        try {
+          fs.rmSync(lockPath, { force: true });
+        } catch {
+        }
+        throw writeError;
+      }
+      return { path: lockPath, token };
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") {
+        throw error;
+      }
+      let stale = false;
+      try {
+        const existing = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+        stale = !isProcessAlive(Number(existing.pid));
+      } catch {
+        try {
+          const age = Math.max(0, now - fs.statSync(lockPath).mtimeMs);
+          stale = age > RUNTIME_INSTALL_LOCK_INITIALIZATION_GRACE_MS;
+        } catch (statError) {
+          if (statError instanceof Error && "code" in statError && statError.code === "ENOENT") {
+            continue;
+          }
+          throw new RuntimeInstallBusyError();
+        }
+      }
+      if (!stale || attempt > 0) {
+        throw new RuntimeInstallBusyError();
+      }
+      const stalePath = `${lockPath}.stale-${token}`;
+      try {
+        fs.renameSync(lockPath, stalePath);
+        fs.rmSync(stalePath, { force: true });
+      } catch (cleanupError) {
+        if (cleanupError instanceof Error && "code" in cleanupError && cleanupError.code === "ENOENT") {
+          continue;
+        }
+        throw new RuntimeInstallBusyError();
+      }
+    }
+  }
+  throw new RuntimeInstallBusyError();
+}
+function releaseRuntimeInstallLock(lock) {
+  if (!lock) {
+    return null;
+  }
+  try {
+    const existing = JSON.parse(fs.readFileSync(lock.path, "utf8"));
+    if (existing.token === lock.token) {
+      fs.rmSync(lock.path, { force: true });
+    }
+    return null;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+function createRuntimeInstallWorkspace(pluginRoot, targetId, assetName) {
+  const safeTarget = targetId.replace(/[^A-Za-z0-9_.-]/g, "-");
+  const root = fs.mkdtempSync(
+    path.join(pluginRoot, `.runtime-install-${safeTarget}-`)
+  );
+  const zipPath = path.join(root, path.basename(assetName));
+  return {
+    root,
+    zipPath,
+    partialZipPath: `${zipPath}.part`,
+    stagePath: path.join(root, "stage"),
+    backupPath: path.join(root, "backup")
+  };
+}
+function validateRuntimeArchive(input) {
+  const archive = input instanceof ArrayBuffer ? Buffer.from(input) : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  if (archive.byteLength < 4) {
+    throw new Error("\u4E0B\u8F7D\u6587\u4EF6\u4E3A\u7A7A\u6216\u4E0D\u5B8C\u6574");
+  }
+  const signature = archive.readUInt32LE(0);
+  const zipSignatures = /* @__PURE__ */ new Set([67324752, 101010256, 134695760]);
+  if (!zipSignatures.has(signature)) {
+    throw new Error(
+      "GitHub \u8FD4\u56DE\u7684\u5185\u5BB9\u4E0D\u662F ZIP\uFF0C\u53EF\u80FD\u88AB\u7F51\u7EDC\u4EE3\u7406\u6216\u767B\u5F55\u9875\u9762\u66FF\u6362"
+    );
+  }
+  return archive;
+}
+function writeRuntimeArchive(workspace, archive) {
+  fs.writeFileSync(workspace.partialZipPath, archive, { flag: "wx" });
+  const partialSize = fs.statSync(workspace.partialZipPath).size;
+  if (partialSize !== archive.byteLength) {
+    throw new Error(
+      `\u8FD0\u884C\u65F6 ZIP \u5199\u5165\u4E0D\u5B8C\u6574\uFF1A\u5E94\u4E3A ${archive.byteLength} \u5B57\u8282\uFF0C\u5B9E\u9645\u4E3A ${partialSize} \u5B57\u8282`
+    );
+  }
+  fs.renameSync(workspace.partialZipPath, workspace.zipPath);
+  const finalSize = fs.statSync(workspace.zipPath).size;
+  if (finalSize !== archive.byteLength) {
+    throw new Error("\u8FD0\u884C\u65F6 ZIP \u5728\u89E3\u538B\u524D\u4E22\u5931\u6216\u5927\u5C0F\u53D1\u751F\u53D8\u5316");
+  }
+  return finalSize;
+}
+function removeTreeBestEffort(target) {
+  if (!target) {
+    return null;
+  }
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+function formatElapsed(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1e3));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes} \u5206 ${seconds} \u79D2` : `${seconds} \u79D2`;
+}
+function formatMegabytes(bytes) {
+  return `${(bytes / 1e6).toFixed(1)} MB`;
+}
+
+// src/main.ts
+var PLUGIN_VERSION = "1.4.6";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
+var RUNTIME_INSTALL_REGISTRY_KEY = Symbol.for(
+  "md-export-word.runtime-install-registry"
+);
 var RUNTIME_TARGETS = Object.freeze({
   "windows-x64": {
     id: "windows-x64",
@@ -46,6 +248,7 @@ var RUNTIME_TARGETS = Object.freeze({
     nodePlatform: "win32",
     nodeArch: "x64",
     asset: "md-export-word-runtime-windows-x64.zip",
+    sizeHint: "\u7EA6 64 MB",
     pandocFile: "pandoc.exe",
     crossrefFile: "pandoc-crossref.exe",
     pythonParts: [".venv", "Scripts", "python.exe"]
@@ -56,6 +259,7 @@ var RUNTIME_TARGETS = Object.freeze({
     nodePlatform: "darwin",
     nodeArch: "arm64",
     asset: "md-export-word-runtime-macos-arm64.zip",
+    sizeHint: "\u7EA6 73 MB",
     pandocFile: "pandoc",
     crossrefFile: "pandoc-crossref",
     pythonParts: [".venv", "bin", "python"]
@@ -66,6 +270,7 @@ var RUNTIME_TARGETS = Object.freeze({
     nodePlatform: "darwin",
     nodeArch: "x64",
     asset: "md-export-word-runtime-macos-x64.zip",
+    sizeHint: "\u7EA6 34 MB",
     pandocFile: "pandoc",
     crossrefFile: "pandoc-crossref",
     pythonParts: [".venv", "bin", "python"]
@@ -123,6 +328,12 @@ var MARGIN_OPTIONS = {
   "2.54": "\u56DB\u8FB9 2.54 cm",
   "3": "\u56DB\u8FB9 3.00 cm"
 };
+function runtimeInstallRegistry() {
+  if (!globalThis[RUNTIME_INSTALL_REGISTRY_KEY]) {
+    globalThis[RUNTIME_INSTALL_REGISTRY_KEY] = /* @__PURE__ */ Object.create(null);
+  }
+  return globalThis[RUNTIME_INSTALL_REGISTRY_KEY];
+}
 function detectedRuntimeTargetId() {
   const exact = Object.values(RUNTIME_TARGETS).find(
     (target) => target.nodePlatform === process.platform && target.nodeArch === process.arch
@@ -203,17 +414,17 @@ function fileTimestamp(date = /* @__PURE__ */ new Date()) {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 function uniqueOutputPath(requestedPath) {
-  if (!fs.existsSync(requestedPath)) {
+  if (!fs2.existsSync(requestedPath)) {
     return requestedPath;
   }
-  const directory = path.dirname(requestedPath);
-  const extension = path.extname(requestedPath) || ".docx";
-  const stem = path.basename(requestedPath, extension);
+  const directory = path2.dirname(requestedPath);
+  const extension = path2.extname(requestedPath) || ".docx";
+  const stem = path2.basename(requestedPath, extension);
   const stampedStem = `${stem}-${fileTimestamp()}`;
-  let candidate = path.join(directory, `${stampedStem}${extension}`);
+  let candidate = path2.join(directory, `${stampedStem}${extension}`);
   let sequence = 2;
-  while (fs.existsSync(candidate)) {
-    candidate = path.join(
+  while (fs2.existsSync(candidate)) {
+    candidate = path2.join(
       directory,
       `${stampedStem}-${sequence}${extension}`
     );
@@ -726,9 +937,9 @@ var ExportProgressModal = class extends import_obsidian.Modal {
   }
   async copyLogText(logPath = "") {
     let text = this.logLines.join("\n");
-    if (logPath && fs.existsSync(logPath)) {
+    if (logPath && fs2.existsSync(logPath)) {
       try {
-        text = fs.readFileSync(logPath, "utf8");
+        text = fs2.readFileSync(logPath, "utf8");
       } catch {
       }
     }
@@ -738,7 +949,7 @@ var ExportProgressModal = class extends import_obsidian.Modal {
     );
   }
   openLogFile(logPath) {
-    if (!logPath || !fs.existsSync(logPath)) {
+    if (!logPath || !fs2.existsSync(logPath)) {
       new import_obsidian.Notice("\u672A\u627E\u5230\u9519\u8BEF\u65E5\u5FD7\u6587\u4EF6\u3002", 1e4);
       return;
     }
@@ -887,10 +1098,10 @@ function appendFailureProcessOutput(logPath, output) {
     return;
   }
   const section = "\nObsidian captured process output\n--------------------------------\n" + humanOutput + "\n";
-  if (fs.existsSync(logPath)) {
-    fs.appendFileSync(logPath, section, "utf8");
+  if (fs2.existsSync(logPath)) {
+    fs2.appendFileSync(logPath, section, "utf8");
   } else {
-    fs.writeFileSync(
+    fs2.writeFileSync(
       logPath,
       "MD Export Word failure report\n" + section,
       "utf8"
@@ -904,16 +1115,17 @@ var MdExportWordSettingTab = class extends import_obsidian.PluginSettingTab {
   }
   display() {
     const { containerEl } = this;
+    const runtimeInstalling = this.plugin.isRuntimeInstalling();
     containerEl.empty();
     containerEl.createEl("h2", { text: "MD Export Word" });
     new import_obsidian.Setting(containerEl).setName("\u8FD0\u884C\u65F6\u53D1\u5E03\u4ED3\u5E93").setDesc(
       "\u901A\u5E38\u7531\u6B63\u5F0F Release \u81EA\u52A8\u5199\u5165\uFF1B\u4EC5\u5728\u81EA\u5EFA\u5206\u652F\u6216\u79C1\u6709\u4ED3\u5E93\u4E2D\u9700\u8981\u4FEE\u6539\u3002"
-    ).addText(
-      (text) => text.setPlaceholder("owner/obsidian-md-export-word").setValue(this.plugin.getReleaseRepository()).onChange(async (value) => {
+    ).addText((text) => {
+      text.setPlaceholder("owner/obsidian-md-export-word").setValue(this.plugin.getReleaseRepository()).setDisabled(runtimeInstalling).onChange(async (value) => {
         this.plugin.exportSettings.repository = value.trim();
         await this.plugin.saveData(this.plugin.exportSettings);
-      })
-    );
+      });
+    });
     new import_obsidian.Setting(containerEl).setName("\u5BFC\u51FA\u6210\u529F\u540E\u81EA\u52A8\u6253\u5F00 Word").setDesc("\u9ED8\u8BA4\u5F00\u542F\uFF1B\u53EA\u6709\u5BFC\u51FA\u548C\u81EA\u52A8\u81EA\u68C0\u5747\u6210\u529F\u65F6\u624D\u4F1A\u6253\u5F00\u751F\u6210\u7684 .docx\u3002").addToggle(
       (toggle) => toggle.setValue(this.plugin.exportSettings.autoOpen !== false).onChange(async (value) => {
         this.plugin.exportSettings.autoOpen = value;
@@ -931,23 +1143,30 @@ var MdExportWordSettingTab = class extends import_obsidian.PluginSettingTab {
       for (const target of Object.values(RUNTIME_TARGETS)) {
         dropdown.addOption(target.id, target.label);
       }
-      dropdown.setValue(this.plugin.exportSettings.runtimePlatform || "auto").onChange(async (value) => {
+      dropdown.setValue(this.plugin.exportSettings.runtimePlatform || "auto").setDisabled(runtimeInstalling).onChange(async (value) => {
         this.plugin.exportSettings.runtimePlatform = value;
         await this.plugin.saveData(this.plugin.exportSettings);
         this.display();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Word \u5BFC\u51FA\u8FD0\u884C\u65F6").setDesc(this.plugin.runtimeStatusText()).addButton(
-      (button) => button.setButtonText("\u5B89\u88C5\u6216\u4FEE\u590D").setCta().onClick(async () => {
-        await this.plugin.installRuntime();
+    new import_obsidian.Setting(containerEl).setName("Word \u5BFC\u51FA\u8FD0\u884C\u65F6").setDesc(
+      runtimeInstalling ? "\u6B63\u5728\u5B89\u88C5\u8FD0\u884C\u65F6\u3002\u5F53\u524D\u4EFB\u52A1\u5B8C\u6210\u524D\u65E0\u9700\u91CD\u590D\u64CD\u4F5C\u3002" : this.plugin.runtimeStatusText()
+    ).addButton((button) => {
+      button.setButtonText(runtimeInstalling ? "\u6B63\u5728\u5B89\u88C5..." : "\u5B89\u88C5\u6216\u4FEE\u590D").setCta().setDisabled(runtimeInstalling).onClick(async () => {
+        const installPromise = this.plugin.installRuntime();
         this.display();
-      })
-    ).addButton(
-      (button) => button.setButtonText("\u73AF\u5883\u81EA\u68C0").onClick(async () => {
+        try {
+          await installPromise;
+        } finally {
+          this.display();
+        }
+      });
+    }).addButton((button) => {
+      button.setButtonText("\u73AF\u5883\u81EA\u68C0").setDisabled(runtimeInstalling).onClick(async () => {
         await this.plugin.runDoctor();
         this.display();
-      })
-    );
+      });
+    });
   }
 };
 var MdExportWordPlugin = class extends import_obsidian.Plugin {
@@ -1023,7 +1242,7 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
     if (typeof adapter.getBasePath !== "function") {
       return null;
     }
-    return path.join(
+    return path2.join(
       adapter.getBasePath(),
       this.app.vault.configDir,
       "plugins",
@@ -1032,11 +1251,11 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
   }
   getRuntimeRoot() {
     const pluginRoot = this.getPluginRoot();
-    return pluginRoot ? path.join(pluginRoot, "runtime") : null;
+    return pluginRoot ? path2.join(pluginRoot, "runtime") : null;
   }
   getTemplateRoot() {
     const pluginRoot = this.getPluginRoot();
-    return pluginRoot ? path.join(pluginRoot, "templates") : null;
+    return pluginRoot ? path2.join(pluginRoot, "templates") : null;
   }
   getRuntimeTarget() {
     const selected = String(
@@ -1064,18 +1283,18 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
     if (!root || !target) {
       return null;
     }
-    const binaryRoot = path.join(root, "Pandoc&pandoc-crossref");
+    const binaryRoot = path2.join(root, "Pandoc&pandoc-crossref");
     return {
       root,
       target,
-      manifest: path.join(root, RUNTIME_MANIFEST),
-      exporter: path.join(root, "scripts", "md_export_word_template.py"),
-      recolor: path.join(root, "scripts", "recolor_zotero_citations.py"),
-      doctor: path.join(root, "scripts", "doctor.py"),
-      pandoc: path.join(binaryRoot, target.pandocFile),
-      crossref: path.join(binaryRoot, target.crossrefFile),
-      python: path.join(root, ...target.pythonParts),
-      template: path.join(root, "Word-Template", DEFAULT_TEMPLATE_FILE)
+      manifest: path2.join(root, RUNTIME_MANIFEST),
+      exporter: path2.join(root, "scripts", "md_export_word_template.py"),
+      recolor: path2.join(root, "scripts", "recolor_zotero_citations.py"),
+      doctor: path2.join(root, "scripts", "doctor.py"),
+      pandoc: path2.join(binaryRoot, target.pandocFile),
+      crossref: path2.join(binaryRoot, target.crossrefFile),
+      python: path2.join(root, ...target.pythonParts),
+      template: path2.join(root, "Word-Template", DEFAULT_TEMPLATE_FILE)
     };
   }
   ensureTemplateLibrary() {
@@ -1084,16 +1303,16 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
     if (!runtimeRoot || !templateRoot) {
       return null;
     }
-    const bundled = path.join(runtimeRoot, "Word-Template");
-    fs.mkdirSync(templateRoot, { recursive: true });
-    for (const name of fs.readdirSync(bundled)) {
+    const bundled = path2.join(runtimeRoot, "Word-Template");
+    fs2.mkdirSync(templateRoot, { recursive: true });
+    for (const name of fs2.readdirSync(bundled)) {
       if (name.startsWith("~$") || !name.toLowerCase().endsWith(".docx")) {
         continue;
       }
-      const source = path.join(bundled, name);
-      const destination = path.join(templateRoot, name);
-      if (!fs.existsSync(destination)) {
-        fs.copyFileSync(source, destination);
+      const source = path2.join(bundled, name);
+      const destination = path2.join(templateRoot, name);
+      if (!fs2.existsSync(destination)) {
+        fs2.copyFileSync(source, destination);
       }
     }
     return templateRoot;
@@ -1104,16 +1323,15 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       return saved;
     }
     const stamped = String(
-      true ? "" : ""
+      true ? "2891892831z-ship-it/obsidian-md-export-word" : ""
     ).trim();
     return stamped;
   }
-  runtimeStatus() {
+  runtimeStatus(target = this.getRuntimeTarget(), expectedVersion = this.manifest.version) {
     const root = this.getRuntimeRoot();
     if (!root) {
       return { ready: false, message: "\u5F53\u524D\u77E5\u8BC6\u5E93\u4E0D\u662F\u672C\u5730\u6587\u4EF6\u7CFB\u7EDF\u3002" };
     }
-    const target = this.getRuntimeTarget();
     const compatibilityError = this.runtimeCompatibilityError(target);
     if (compatibilityError) {
       return { ready: false, message: compatibilityError };
@@ -1129,7 +1347,7 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       runtimePaths.python,
       runtimePaths.template
     ];
-    const missing = required.filter((file) => !fs.existsSync(file));
+    const missing = required.filter((file) => !fs2.existsSync(file));
     if (missing.length) {
       return {
         ready: false,
@@ -1138,12 +1356,12 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
     }
     try {
       const manifest = JSON.parse(
-        fs.readFileSync(runtimePaths.manifest, "utf8")
+        fs2.readFileSync(runtimePaths.manifest, "utf8")
       );
-      if (manifest.version !== this.manifest.version) {
+      if (manifest.version !== expectedVersion) {
         return {
           ready: false,
-          message: `\u8FD0\u884C\u65F6\u7248\u672C ${manifest.version || "unknown"} \u4E0E\u63D2\u4EF6\u7248\u672C ${this.manifest.version} \u4E0D\u4E00\u81F4\u3002`
+          message: `\u8FD0\u884C\u65F6\u7248\u672C ${manifest.version || "unknown"} \u4E0E\u63D2\u4EF6\u7248\u672C ${expectedVersion} \u4E0D\u4E00\u81F4\u3002`
         };
       }
       if (manifest.platform !== target.id) {
@@ -1174,7 +1392,25 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       ).open();
     });
   }
-  async installRuntime() {
+  isRuntimeInstalling() {
+    const key = this.getPluginRoot() || this.manifest.id;
+    return Boolean(runtimeInstallRegistry()[key]);
+  }
+  installRuntime() {
+    const key = this.getPluginRoot() || this.manifest.id;
+    return runSingleFlight(
+      runtimeInstallRegistry(),
+      key,
+      () => this.installRuntimeOnce(),
+      () => {
+        new import_obsidian.Notice(
+          "Word \u5BFC\u51FA\u8FD0\u884C\u65F6\u6B63\u5728\u5B89\u88C5\uFF0C\u8BF7\u7B49\u5F85\u5F53\u524D\u4EFB\u52A1\u5B8C\u6210\uFF0C\u65E0\u9700\u91CD\u590D\u70B9\u51FB\u3002",
+          8e3
+        );
+      }
+    );
+  }
+  async installRuntimeOnce() {
     const target = this.getRuntimeTarget();
     const compatibilityError = this.runtimeCompatibilityError(target);
     if (compatibilityError) {
@@ -1187,42 +1423,102 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       return false;
     }
     let repository = this.getReleaseRepository();
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-      repository = await this.askRepository(repository);
-      if (!repository) {
-        new import_obsidian.Notice("\u5DF2\u53D6\u6D88\u8FD0\u884C\u65F6\u5B89\u88C5\u3002");
-        return false;
-      }
+    try {
       if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-        new import_obsidian.Notice("GitHub \u4ED3\u5E93\u683C\u5F0F\u4E0D\u6B63\u786E\uFF0C\u5E94\u4E3A owner/repository\u3002", 1e4);
-        return false;
+        repository = await this.askRepository(repository);
+        if (!repository) {
+          new import_obsidian.Notice("\u5DF2\u53D6\u6D88\u8FD0\u884C\u65F6\u5B89\u88C5\u3002");
+          return false;
+        }
+        if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+          new import_obsidian.Notice("GitHub \u4ED3\u5E93\u683C\u5F0F\u4E0D\u6B63\u786E\uFF0C\u5E94\u4E3A owner/repository\u3002", 1e4);
+          return false;
+        }
+        this.exportSettings.repository = repository;
+        await this.saveData(this.exportSettings);
       }
-      this.exportSettings.repository = repository;
-      await this.saveData(this.exportSettings);
+    } catch (error) {
+      new import_obsidian.Notice(`\u65E0\u6CD5\u4FDD\u5B58\u8FD0\u884C\u65F6\u4ED3\u5E93\u8BBE\u7F6E\uFF1A${error.message}`, 12e3);
+      return false;
     }
     const version = this.manifest.version || PLUGIN_VERSION;
     const url = `https://github.com/${repository}/releases/download/${version}/${target.asset}`;
-    const zipPath = path.join(
-      pluginRoot,
-      `.runtime-download-${target.id}.zip`
-    );
-    const stagePath = path.join(pluginRoot, ".runtime-stage");
-    const runtimePath = path.join(pluginRoot, "runtime");
-    const backupPath = path.join(pluginRoot, ".runtime-backup");
-    let newRuntimeInstalled = false;
-    try {
-      new import_obsidian.Notice(
-        `\u6B63\u5728\u4E0B\u8F7D ${target.label} Word \u5BFC\u51FA\u8FD0\u884C\u65F6 ${version}\u2026`,
-        8e3
-      );
-      const response = await (0, import_obsidian.requestUrl)({ url, method: "GET" });
-      if (response.status < 200 || response.status >= 300) {
-        throw new Error(`HTTP ${response.status}`);
+    const runtimePath = path2.join(pluginRoot, "runtime");
+    let workspace = null;
+    let installLock = null;
+    let progressNotice = null;
+    let progressTimer = null;
+    let progressStageCode = "prepare";
+    let progressStage = "\u51C6\u5907\u5B89\u88C5\u8FD0\u884C\u65F6";
+    let progressDetail = "";
+    const startedAt = Date.now();
+    let oldRuntimeBackedUp = false;
+    let newRuntimeActivated = false;
+    let committed = false;
+    let rollbackSucceeded = false;
+    const refreshProgress = () => {
+      if (!progressNotice) {
+        return;
       }
-      fs.writeFileSync(zipPath, Buffer.from(response.arrayBuffer));
-      fs.rmSync(stagePath, { recursive: true, force: true });
-      fs.rmSync(backupPath, { recursive: true, force: true });
-      fs.mkdirSync(stagePath, { recursive: true });
+      const elapsed = formatElapsed(Date.now() - startedAt);
+      progressNotice.setMessage(
+        `${progressStage}
+\u5DF2\u7528\u65F6 ${elapsed}\u3002${progressDetail}`
+      );
+    };
+    const setProgress = (stageCode, stage, detail = "") => {
+      progressStageCode = stageCode;
+      progressStage = stage;
+      progressDetail = detail;
+      refreshProgress();
+    };
+    try {
+      installLock = acquireRuntimeInstallLock(pluginRoot);
+      workspace = createRuntimeInstallWorkspace(
+        pluginRoot,
+        target.id,
+        target.asset
+      );
+      progressNotice = new import_obsidian.Notice("", 0);
+      setProgress(
+        "download",
+        `\u6B63\u5728\u4E0B\u8F7D ${target.label} Word \u5BFC\u51FA\u8FD0\u884C\u65F6 ${version}`,
+        `\u5B89\u88C5\u5305${target.sizeHint}\uFF0CGitHub \u7F51\u7EDC\u8F83\u6162\u65F6\u53EF\u80FD\u9700\u8981\u6570\u5206\u949F\uFF1B\u8BF7\u52FF\u91CD\u590D\u70B9\u51FB\u3002`
+      );
+      progressTimer = window.setInterval(refreshProgress, 5e3);
+      this.registerInterval(progressTimer);
+      const response = await withTimeout(
+        (0, import_obsidian.requestUrl)({
+          url,
+          method: "GET",
+          throw: false
+        }),
+        RUNTIME_DOWNLOAD_TIMEOUT_MS,
+        () => new Error(
+          "\u4E0B\u8F7D\u8D85\u8FC7 5 \u5206\u949F\uFF0C\u63D2\u4EF6\u5DF2\u505C\u6B62\u7B49\u5F85\u3002\u8BF7\u68C0\u67E5 GitHub \u7F51\u7EDC\u540E\u91CD\u8BD5"
+        )
+      );
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(
+          `GitHub Release \u8FD4\u56DE HTTP ${response.status}\uFF0C\u8BF7\u786E\u8BA4 ${version} \u5DF2\u53D1\u5E03\u4E14\u5305\u542B ${target.asset}`
+        );
+      }
+      setProgress(
+        "validate-download",
+        "\u6B63\u5728\u6821\u9A8C\u4E0B\u8F7D\u5185\u5BB9",
+        "\u6B63\u5728\u786E\u8BA4 ZIP \u683C\u5F0F\u548C\u672C\u5730\u5199\u5165\u5927\u5C0F\u3002"
+      );
+      const archive = validateRuntimeArchive(response.arrayBuffer);
+      const archiveSize = writeRuntimeArchive(workspace, archive);
+      if (!fs2.existsSync(workspace.zipPath) || fs2.statSync(workspace.zipPath).size !== archiveSize) {
+        throw new Error("\u8FD0\u884C\u65F6 ZIP \u5728\u89E3\u538B\u524D\u4E22\u5931\u6216\u5927\u5C0F\u53D1\u751F\u53D8\u5316");
+      }
+      fs2.mkdirSync(workspace.stagePath, { recursive: true });
+      setProgress(
+        "extract",
+        `\u4E0B\u8F7D\u5B8C\u6210\uFF08${formatMegabytes(archiveSize)}\uFF09\uFF0C\u6B63\u5728\u89E3\u538B`,
+        "\u8BF7\u4FDD\u6301 Obsidian \u8FD0\u884C\u3002"
+      );
       const extractResult = process.platform === "win32" ? await runProcess(
         "powershell.exe",
         [
@@ -1231,13 +1527,13 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
           "Bypass",
           "-Command",
           "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
-          zipPath,
-          stagePath
+          workspace.zipPath,
+          workspace.stagePath
         ],
         { cwd: pluginRoot }
       ) : await runProcess(
         "/usr/bin/ditto",
-        ["-x", "-k", zipPath, stagePath],
+        ["-x", "-k", workspace.zipPath, workspace.stagePath],
         { cwd: pluginRoot }
       );
       if (extractResult.code !== 0) {
@@ -1245,30 +1541,46 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
           extractResult.output.trim() || `\u89E3\u538B\u8FD0\u884C\u65F6\u5931\u8D25\uFF1A${extractResult.code}`
         );
       }
-      const payloadPath = path.join(stagePath, "runtime");
-      const payloadManifestPath = path.join(
+      setProgress(
+        "validate-package",
+        "\u6B63\u5728\u6821\u9A8C\u8FD0\u884C\u65F6\u5305",
+        "\u6B63\u5728\u68C0\u67E5\u7248\u672C\u548C CPU \u5E73\u53F0\u3002"
+      );
+      const payloadPath = path2.join(workspace.stagePath, "runtime");
+      const payloadManifestPath = path2.join(
         payloadPath,
         RUNTIME_MANIFEST
       );
-      if (!fs.existsSync(payloadManifestPath)) {
+      if (!fs2.existsSync(payloadManifestPath)) {
         throw new Error("\u8FD0\u884C\u65F6\u5305\u7F3A\u5C11 runtime/runtime-manifest.json");
       }
       const payloadManifest = JSON.parse(
-        fs.readFileSync(payloadManifestPath, "utf8")
+        fs2.readFileSync(payloadManifestPath, "utf8")
       );
       if (payloadManifest.version !== version || payloadManifest.platform !== target.id) {
         throw new Error(
           `\u8FD0\u884C\u65F6\u5305\u4E0D\u5339\u914D\uFF1A\u7248\u672C ${payloadManifest.version || "unknown"}\uFF0C\u5E73\u53F0 ${payloadManifest.platform || "unknown"}`
         );
       }
-      if (fs.existsSync(runtimePath)) {
-        fs.renameSync(runtimePath, backupPath);
+      setProgress(
+        "activate",
+        "\u6B63\u5728\u66FF\u6362\u65E7\u8FD0\u884C\u65F6",
+        "\u539F\u8FD0\u884C\u65F6\u4F1A\u5148\u5907\u4EFD\uFF0C\u5931\u8D25\u65F6\u81EA\u52A8\u6062\u590D\u3002"
+      );
+      if (fs2.existsSync(runtimePath)) {
+        fs2.renameSync(runtimePath, workspace.backupPath);
+        oldRuntimeBackedUp = true;
       }
-      fs.renameSync(payloadPath, runtimePath);
-      newRuntimeInstalled = true;
+      fs2.renameSync(payloadPath, runtimePath);
+      newRuntimeActivated = true;
+      setProgress(
+        "setup",
+        "\u6B63\u5728\u914D\u7F6E\u79C1\u6709 Python \u73AF\u5883",
+        "\u9996\u6B21\u521B\u5EFA\u865A\u62DF\u73AF\u5883\u6216\u8BBF\u95EE PyPI \u65F6\u53EF\u80FD\u9700\u8981\u51E0\u5206\u949F\u3002"
+      );
       let setupResult;
       if (process.platform === "win32") {
-        const setupPath = path.join(
+        const setupPath = path2.join(
           runtimePath,
           "scripts",
           "setup-runtime.ps1"
@@ -1286,28 +1598,28 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
         );
       } else {
         const executablePaths = [
-          path.join(runtimePath, "scripts", "setup-runtime.sh"),
-          path.join(runtimePath, "scripts", "doctor.sh"),
-          path.join(runtimePath, "scripts", "MD\u5BFC\u51FAWord\u6A21\u677F.command"),
-          path.join(
+          path2.join(runtimePath, "scripts", "setup-runtime.sh"),
+          path2.join(runtimePath, "scripts", "doctor.sh"),
+          path2.join(runtimePath, "scripts", "MD\u5BFC\u51FAWord\u6A21\u677F.command"),
+          path2.join(
             runtimePath,
             "Pandoc&pandoc-crossref",
             target.pandocFile
           ),
-          path.join(
+          path2.join(
             runtimePath,
             "Pandoc&pandoc-crossref",
             target.crossrefFile
           )
         ];
         for (const executablePath of executablePaths) {
-          if (fs.existsSync(executablePath)) {
-            fs.chmodSync(executablePath, 493);
+          if (fs2.existsSync(executablePath)) {
+            fs2.chmodSync(executablePath, 493);
           }
         }
         setupResult = await runProcess(
           "/bin/bash",
-          [path.join(runtimePath, "scripts", "setup-runtime.sh")],
+          [path2.join(runtimePath, "scripts", "setup-runtime.sh")],
           { cwd: runtimePath }
         );
       }
@@ -1316,30 +1628,72 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
           setupResult.output.trim() || `Python \u73AF\u5883\u5B89\u88C5\u5931\u8D25\uFF1A${setupResult.code}`
         );
       }
-      const status = this.runtimeStatus();
+      setProgress("doctor", "\u6B63\u5728\u6267\u884C\u6700\u7EC8\u73AF\u5883\u81EA\u68C0", "\u5373\u5C06\u5B8C\u6210\u5B89\u88C5\u3002");
+      const status = this.runtimeStatus(target, version);
       if (!status.ready) {
         throw new Error(status.message);
       }
       this.ensureTemplateLibrary();
-      fs.rmSync(backupPath, { recursive: true, force: true });
-      fs.rmSync(stagePath, { recursive: true, force: true });
-      fs.rmSync(zipPath, { force: true });
+      committed = true;
       new import_obsidian.Notice(`Word \u5BFC\u51FA\u8FD0\u884C\u65F6\u5B89\u88C5\u5B8C\u6210\uFF1A${status.message}`, 1e4);
       return true;
     } catch (error) {
-      if (newRuntimeInstalled) {
-        fs.rmSync(runtimePath, { recursive: true, force: true });
+      if (committed) {
+        console.warn("\u8FD0\u884C\u65F6\u5DF2\u5B89\u88C5\uFF0C\u4F46\u5B8C\u6210\u63D0\u793A\u5931\u8D25\uFF1A", error);
+        return true;
       }
-      if (fs.existsSync(backupPath)) {
-        fs.renameSync(backupPath, runtimePath);
+      let failureMessage = error instanceof Error ? error.message : String(error);
+      try {
+        if (newRuntimeActivated && fs2.existsSync(runtimePath)) {
+          fs2.rmSync(runtimePath, { recursive: true, force: true });
+        }
+        if (oldRuntimeBackedUp) {
+          if (!workspace || !fs2.existsSync(workspace.backupPath)) {
+            throw new Error("\u65E7\u8FD0\u884C\u65F6\u5907\u4EFD\u4E0D\u5B58\u5728");
+          }
+          if (fs2.existsSync(runtimePath)) {
+            fs2.rmSync(runtimePath, { recursive: true, force: true });
+          }
+          fs2.renameSync(workspace.backupPath, runtimePath);
+        }
+        rollbackSucceeded = true;
+      } catch (rollbackError) {
+        failureMessage += "\uFF1B\u81EA\u52A8\u6062\u590D\u65E7\u8FD0\u884C\u65F6\u5931\u8D25\uFF1A" + (rollbackError instanceof Error ? rollbackError.message : String(rollbackError));
       }
-      fs.rmSync(stagePath, { recursive: true, force: true });
-      fs.rmSync(zipPath, { force: true });
+      if (error instanceof RuntimeInstallBusyError) {
+        new import_obsidian.Notice(error.message, 1e4);
+        return false;
+      }
+      const downloadFailure = [
+        "download",
+        "validate-download"
+      ].includes(progressStageCode);
+      const retryHint = downloadFailure ? "\u8BF7\u786E\u8BA4\u6D4F\u89C8\u5668\u80FD\u6253\u5F00\u8BE5\u7248\u672C\u7684 GitHub Release\uFF0C\u7F51\u7EDC\u6062\u590D\u540E\u53EA\u91CD\u8BD5\u4E00\u6B21\u3002" : "\u8BF7\u91CD\u65B0\u6267\u884C\u201C\u5B89\u88C5\u6216\u4FEE\u590D\u201D\uFF1B\u82E5\u4ECD\u5931\u8D25\uFF0C\u8FD0\u884C\u73AF\u5883\u81EA\u68C0\u5E76\u67E5\u770B\u6545\u969C\u6392\u67E5\u6587\u6863\u3002";
+      const backupAvailable = !rollbackSucceeded && oldRuntimeBackedUp && workspace && fs2.existsSync(workspace.backupPath);
+      const backupHint = backupAvailable ? ` \u65E7\u8FD0\u884C\u65F6\u5907\u4EFD\u4FDD\u7559\u5728\uFF1A${workspace.backupPath}\u3002` : !rollbackSucceeded ? " \u81EA\u52A8\u6E05\u7406\u5931\u8D25\u7684\u65B0\u8FD0\u884C\u65F6\u672A\u5B8C\u6210\uFF0C\u8BF7\u5B8C\u5168\u9000\u51FA Obsidian \u540E\u518D\u4FEE\u590D\u3002" : "";
       new import_obsidian.Notice(
-        `\u8FD0\u884C\u65F6\u5B89\u88C5\u5931\u8D25\uFF1A${error.message}\u3002\u8BF7\u67E5\u770B docs/\u6545\u969C\u6392\u67E5.md\u3002`,
-        15e3
+        `\u8FD0\u884C\u65F6\u5B89\u88C5\u5931\u8D25\uFF08${progressStage}\uFF09\uFF1A${failureMessage}\u3002${retryHint}${backupHint}`,
+        2e4
       );
       return false;
+    } finally {
+      if (progressTimer !== null) {
+        window.clearInterval(progressTimer);
+      }
+      progressNotice?.hide();
+      if (committed || rollbackSucceeded) {
+        const cleanupError = removeTreeBestEffort(workspace?.root || null);
+        if (cleanupError) {
+          console.warn(
+            "\u8FD0\u884C\u65F6\u5B89\u88C5\u5DF2\u7ED3\u675F\uFF0C\u4F46\u4E34\u65F6\u76EE\u5F55\u6E05\u7406\u5931\u8D25\uFF1A",
+            cleanupError
+          );
+        }
+      }
+      const lockError = releaseRuntimeInstallLock(installLock);
+      if (lockError) {
+        console.warn("\u8FD0\u884C\u65F6\u5B89\u88C5\u9501\u6E05\u7406\u5931\u8D25\uFF1A", lockError);
+      }
     }
   }
   async runDoctor() {
@@ -1350,7 +1704,7 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       return false;
     }
     const runtimePaths = this.runtimePaths(root);
-    if (!runtimePaths || !fs.existsSync(runtimePaths.doctor) || !fs.existsSync(runtimePaths.python)) {
+    if (!runtimePaths || !fs2.existsSync(runtimePaths.doctor) || !fs2.existsSync(runtimePaths.python)) {
       new import_obsidian.Notice("\u8DE8\u5E73\u53F0\u73AF\u5883\u81EA\u68C0\u7A0B\u5E8F\u4E0D\u5B58\u5728\uFF0C\u8BF7\u5148\u5B89\u88C5\u6216\u4FEE\u590D\u8FD0\u884C\u65F6\u3002");
       return false;
     }
@@ -1416,19 +1770,19 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       }
     }
     const runtimePaths = this.runtimePaths(this.getRuntimeRoot());
-    if (!runtimePaths || !fs.existsSync(runtimePaths.python) || !fs.existsSync(runtimePaths.recolor)) {
+    if (!runtimePaths || !fs2.existsSync(runtimePaths.python) || !fs2.existsSync(runtimePaths.recolor)) {
       new import_obsidian.Notice("\u672A\u627E\u5230 Zotero \u5F15\u6587\u7740\u8272\u7A0B\u5E8F\uFF0C\u8BF7\u5B89\u88C5\u6216\u4FEE\u590D\u8FD0\u884C\u65F6\u3002");
       return;
     }
-    const markdownPath = path.join(adapter.getBasePath(), file.path);
-    const directory = path.dirname(markdownPath);
+    const markdownPath = path2.join(adapter.getBasePath(), file.path);
+    const directory = path2.dirname(markdownPath);
     let wordFiles = [];
     try {
-      wordFiles = fs.readdirSync(directory, { withFileTypes: true }).filter(
+      wordFiles = fs2.readdirSync(directory, { withFileTypes: true }).filter(
         (entry) => entry.isFile() && !entry.name.startsWith("~$") && entry.name.toLowerCase().endsWith(".docx")
       ).map((entry) => {
-        const wordPath = path.join(directory, entry.name);
-        const modified = fs.statSync(wordPath).mtime;
+        const wordPath = path2.join(directory, entry.name);
+        const modified = fs2.statSync(wordPath).mtime;
         return {
           path: wordPath,
           modified,
@@ -1448,28 +1802,28 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
       new import_obsidian.Notice("\u5DF2\u53D6\u6D88 Zotero \u5F15\u6587\u7740\u8272\u3002");
       return;
     }
-    if (!fs.existsSync(selectedPath)) {
+    if (!fs2.existsSync(selectedPath)) {
       new import_obsidian.Notice(`\u6240\u9009 Word \u5DF2\u4E0D\u5B58\u5728\uFF1A${selectedPath}`, 1e4);
       return;
     }
-    const requestedOutput = path.join(
-      path.dirname(selectedPath),
-      `${path.basename(selectedPath, path.extname(selectedPath))}-\u5F15\u6587\u84DD\u8272.docx`
+    const requestedOutput = path2.join(
+      path2.dirname(selectedPath),
+      `${path2.basename(selectedPath, path2.extname(selectedPath))}-\u5F15\u6587\u84DD\u8272.docx`
     );
     const outputPath = uniqueOutputPath(requestedOutput);
-    const failureLogPath = path.join(
-      path.dirname(selectedPath),
-      `${path.basename(selectedPath, path.extname(selectedPath))}-\u5F15\u6587\u7740\u8272\u5931\u8D25.log.txt`
+    const failureLogPath = path2.join(
+      path2.dirname(selectedPath),
+      `${path2.basename(selectedPath, path2.extname(selectedPath))}-\u5F15\u6587\u7740\u8272\u5931\u8D25.log.txt`
     );
-    if (fs.existsSync(failureLogPath)) {
+    if (fs2.existsSync(failureLogPath)) {
       try {
-        fs.unlinkSync(failureLogPath);
+        fs2.unlinkSync(failureLogPath);
       } catch {
       }
     }
     const progressModal = new ExportProgressModal(
       this.app,
-      path.basename(selectedPath),
+      path2.basename(selectedPath),
       {
         title: "\u6B63\u5728\u6062\u590D Zotero \u5F15\u6587\u989C\u8272",
         successStage: "\u5F15\u6587\u7740\u8272\u5B8C\u6210",
@@ -1495,7 +1849,7 @@ var MdExportWordPlugin = class extends import_obsidian.Plugin {
     let output = "";
     let failedToStart = false;
     const child = (0, import_node_child_process.spawn)(runtimePaths.python, recolorArgs, {
-      cwd: path.dirname(runtimePaths.recolor),
+      cwd: path2.dirname(runtimePaths.recolor),
       env: {
         ...process.env,
         PYTHONUTF8: "1",
@@ -1553,10 +1907,10 @@ ${launchError}
       }
       if (code === 0) {
         const wordMatch = output.match(/Word：([^\r\n]+)/);
-        const wordName = wordMatch ? path.basename(wordMatch[1].trim()) : path.basename(outputPath);
-        if (fs.existsSync(failureLogPath)) {
+        const wordName = wordMatch ? path2.basename(wordMatch[1].trim()) : path2.basename(outputPath);
+        if (fs2.existsSync(failureLogPath)) {
           try {
-            fs.unlinkSync(failureLogPath);
+            fs2.unlinkSync(failureLogPath);
           } catch {
           }
         }
@@ -1579,7 +1933,7 @@ ${launchError}
       );
     });
     new import_obsidian.Notice(
-      `\u6B63\u5728\u751F\u6210\u84DD\u8272\u5F15\u6587\u526F\u672C\uFF1A${path.basename(outputPath)}`,
+      `\u6B63\u5728\u751F\u6210\u84DD\u8272\u5F15\u6587\u526F\u672C\uFF1A${path2.basename(outputPath)}`,
       8e3
     );
   }
@@ -1595,7 +1949,7 @@ ${launchError}
       return;
     }
     const vaultPath = adapter.getBasePath();
-    const markdownPath = path.join(vaultPath, file.path);
+    const markdownPath = path2.join(vaultPath, file.path);
     let markdownSource = "";
     try {
       markdownSource = await this.app.vault.cachedRead(file);
@@ -1626,13 +1980,13 @@ ${launchError}
       new import_obsidian.Notice("\u65E0\u6CD5\u521B\u5EFA\u7528\u6237\u6A21\u677F\u76EE\u5F55\u3002");
       return;
     }
-    if (!runtimePaths || !fs.existsSync(runtimePaths.python) || !fs.existsSync(runtimePaths.exporter)) {
+    if (!runtimePaths || !fs2.existsSync(runtimePaths.python) || !fs2.existsSync(runtimePaths.exporter)) {
       new import_obsidian.Notice("\u672A\u627E\u5230\u5F53\u524D\u7CFB\u7EDF\u7684 Python \u5BFC\u51FA\u7A0B\u5E8F\uFF0C\u8BF7\u5B89\u88C5\u6216\u4FEE\u590D\u8FD0\u884C\u65F6\u3002");
       return;
     }
     let templateFiles = [];
     try {
-      templateFiles = fs.readdirSync(templateDir).filter(
+      templateFiles = fs2.readdirSync(templateDir).filter(
         (name) => !name.startsWith("~$") && name.toLowerCase().endsWith(".docx")
       ).sort((a, b) => a.localeCompare(b, "zh-CN"));
     } catch (error) {
@@ -1654,11 +2008,11 @@ ${launchError}
       new import_obsidian.Notice("\u5DF2\u53D6\u6D88 Word \u5BFC\u51FA\u3002");
       return;
     }
-    const templatePath = path.join(
+    const templatePath = path2.join(
       templateDir,
       formatSelection.templateFile
     );
-    if (!fs.existsSync(templatePath)) {
+    if (!fs2.existsSync(templatePath)) {
       new import_obsidian.Notice(`\u672A\u627E\u5230\u6240\u9009 Word \u6A21\u677F\uFF1A${templatePath}`);
       return;
     }
@@ -1671,26 +2025,26 @@ ${launchError}
       await this.saveData(this.exportSettings);
       new import_obsidian.Notice(`\u5DF2\u4FDD\u5B58\u683C\u5F0F\u65B9\u6848\uFF1A${formatSelection.presetName}`);
     }
-    const requestedOutputPath = path.join(
-      path.dirname(markdownPath),
+    const requestedOutputPath = path2.join(
+      path2.dirname(markdownPath),
       `${formatSelection.outputName}.docx`
     );
     const outputPath = uniqueOutputPath(requestedOutputPath);
     if (outputPath !== requestedOutputPath) {
       new import_obsidian.Notice(
-        `\u540C\u540D Word \u5DF2\u5B58\u5728\uFF0C\u539F\u6587\u4EF6\u4FDD\u6301\u4E0D\u53D8\uFF1B\u672C\u6B21\u53E6\u5B58\u4E3A\uFF1A` + path.basename(outputPath),
+        `\u540C\u540D Word \u5DF2\u5B58\u5728\uFF0C\u539F\u6587\u4EF6\u4FDD\u6301\u4E0D\u53D8\uFF1B\u672C\u6B21\u53E6\u5B58\u4E3A\uFF1A` + path2.basename(outputPath),
         1e4
       );
     }
     let output = "";
     let failedToStart = false;
-    const failureLogPath = path.join(
-      path.dirname(markdownPath),
+    const failureLogPath = path2.join(
+      path2.dirname(markdownPath),
       `${file.basename}-\u5BFC\u51FA\u5931\u8D25.log.txt`
     );
-    if (fs.existsSync(failureLogPath)) {
+    if (fs2.existsSync(failureLogPath)) {
       try {
-        fs.unlinkSync(failureLogPath);
+        fs2.unlinkSync(failureLogPath);
       } catch {
       }
     }
@@ -1716,7 +2070,7 @@ ${launchError}
       runtimePaths.python,
       exporterArgs,
       {
-        cwd: path.dirname(runtimePaths.exporter),
+        cwd: path2.dirname(runtimePaths.exporter),
         env: {
           ...process.env,
           PYTHONUTF8: "1",
@@ -1783,10 +2137,10 @@ ${launchError}
       }
       if (code === 0) {
         const wordMatch = output.match(/Word：([^\r\n]+)/);
-        const wordName = wordMatch ? path.basename(wordMatch[1].trim()) : path.basename(outputPath);
-        if (fs.existsSync(failureLogPath)) {
+        const wordName = wordMatch ? path2.basename(wordMatch[1].trim()) : path2.basename(outputPath);
+        if (fs2.existsSync(failureLogPath)) {
           try {
-            fs.unlinkSync(failureLogPath);
+            fs2.unlinkSync(failureLogPath);
           } catch {
           }
         }
@@ -1811,7 +2165,7 @@ ${launchError}
     child.stdin.end();
     const modeLabel = exportMode === "strict" ? "\u4E25\u683C\u6A21\u5F0F" : "\u517C\u5BB9\u6A21\u5F0F";
     new import_obsidian.Notice(
-      `\u6B63\u5728\u5BFC\u51FA\uFF08${modeLabel}\uFF5C${formatSelection.displayName}\uFF09\uFF1A` + path.basename(outputPath)
+      `\u6B63\u5728\u5BFC\u51FA\uFF08${modeLabel}\uFF5C${formatSelection.displayName}\uFF09\uFF1A` + path2.basename(outputPath)
     );
   }
 };
