@@ -129,6 +129,11 @@ def figure_reflow_inventory(path: Path) -> dict[str, int]:
     image_index = -1
     moved_index = -1
     boundary_index = -1
+    chinese_caption_index = -1
+    english_caption_index = -1
+    chinese_note_index = -1
+    english_note_index = -1
+    generated_alt_caption_count = 0
     max_image_height = 0
     for index, element in enumerate(list(body)):
         text = "".join(
@@ -148,10 +153,29 @@ def figure_reflow_inventory(path: Path) -> dict[str, int]:
             moved_index = index
         if "边界段落不得移动到上一张图片之前" in text:
             boundary_index = index
+        if "图1分页回填测试大图" in text.replace(" ", ""):
+            chinese_caption_index = index
+        if "Figure1.Largefigureforpage-reflowtesting" in text.replace(
+            " ", ""
+        ):
+            english_caption_index = index
+        if "本条中文图注必须始终跟随图片" in text:
+            chinese_note_index = index
+        if "bilingualcaptionsandfigurenotesmustremain" in text.replace(
+            " ", ""
+        ).lower():
+            english_note_index = index
+        if text.replace(" ", "").strip() == "图1分页测试大图":
+            generated_alt_caption_count += 1
     return {
         "image_index": image_index,
         "moved_index": moved_index,
         "boundary_index": boundary_index,
+        "chinese_caption_index": chinese_caption_index,
+        "english_caption_index": english_caption_index,
+        "chinese_note_index": chinese_note_index,
+        "english_note_index": english_note_index,
+        "generated_alt_caption_count": generated_alt_caption_count,
         "max_image_height": max_image_height,
     }
 
@@ -362,6 +386,18 @@ def main() -> int:
         require(
             reflow["boundary_index"] > reflow["image_index"],
             "Figure reflow crossed the next section heading",
+        )
+        require(
+            reflow["image_index"]
+            < reflow["chinese_caption_index"]
+            < reflow["english_caption_index"]
+            < reflow["chinese_note_index"]
+            < reflow["english_note_index"],
+            "Bilingual figure captions or notes were detached from the image",
+        )
+        require(
+            reflow["generated_alt_caption_count"] == 0,
+            "Pandoc's redundant image-alt caption was not removed",
         )
         require(
             0 < reflow["max_image_height"] <= 12518 * 635,

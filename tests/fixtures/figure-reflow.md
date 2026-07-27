@@ -20,6 +20,14 @@ title: 图片分页回填测试
 
 ![分页测试大图](reflow-figure.svg){#fig:page-fill width=100%}
 
+图1 分页回填测试大图
+
+Figure 1. Large figure for page-reflow testing
+
+注：图名、英文图名与本条中文图注必须始终跟随图片，不得当作正文提前。
+
+Note: The bilingual captions and figure notes must remain with the figure.
+
 回填段落一应在导出的 Word 中移动到大图之前，但在源 Markdown 中仍位于大图之后。段落内部文字、公式和引用结构不得改变。
 
 回填段落二继续填充大图换页前的剩余区域。自动回填只能移动完整正文段落，不能拆散图题、图注或表格内容。

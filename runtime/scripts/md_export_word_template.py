@@ -2343,6 +2343,10 @@ def role_for_paragraph(
         return "image_caption"
     if name == "Table Caption":
         return "table_caption"
+    if valid_caption_text(text, DEFAULT_CAPTION_TITLES["figure"]):
+        return "image_caption"
+    if valid_caption_text(text, DEFAULT_CAPTION_TITLES["table"]):
+        return "table_caption"
     if paragraph.xpath(".//w:drawing|.//w:pict", namespaces=NS):
         return "picture"
     if is_note_paragraph_text(text):
@@ -2393,18 +2397,124 @@ def figure_cluster_end(
     id_to_name: dict[str, str],
 ) -> int:
     end = start + 1
-    if end < len(children) and children[end].tag == W("p"):
-        if paragraph_role_for_reflow(children[end], id_to_name) == (
+    while end < len(children):
+        if is_transparent_body_marker(children[end]):
+            end += 1
+            continue
+        if children[end].tag != W("p"):
+            break
+        if paragraph_role_for_reflow(children[end], id_to_name) != (
             "image_caption"
         ):
+            break
+        end += 1
+    while end < len(children):
+        if is_transparent_body_marker(children[end]):
             end += 1
-    while end < len(children) and children[end].tag == W("p"):
+            continue
+        if children[end].tag != W("p"):
+            break
         if paragraph_role_for_reflow(children[end], id_to_name) != "note":
             break
         end += 1
     while end < len(children) and is_transparent_body_marker(children[end]):
         end += 1
     return end
+
+
+CAPTION_SIGNATURE_PATTERNS = {
+    "figure": re.compile(
+        r"^(?P<prefix>图|fig(?:ure)?\.?)\s*"
+        r"(?P<number>\d+(?:[.\-—–]\d+)*(?:[A-Za-z])?)",
+        flags=re.IGNORECASE,
+    ),
+    "table": re.compile(
+        r"^(?P<prefix>表|table)\s*"
+        r"(?P<number>\d+(?:[.\-—–]\d+)*(?:[A-Za-z])?)",
+        flags=re.IGNORECASE,
+    ),
+}
+
+
+def caption_signature(
+    text: str,
+    *,
+    caption_kind: str,
+) -> tuple[str, str] | None:
+    match = CAPTION_SIGNATURE_PATTERNS[caption_kind].match(text.strip())
+    if match is None:
+        return None
+    prefix = match.group("prefix").lower()
+    language = "zh" if prefix in {"图", "表"} else "en"
+    number = re.sub(r"[—–]", "-", match.group("number")).lower()
+    return number, language
+
+
+def remove_redundant_generated_image_captions(
+    document_root: etree._Element,
+    *,
+    image_caption_style_id: str,
+) -> int:
+    """Remove Pandoc's alt-text caption when explicit bilingual captions exist.
+
+    Markdown documents often use a descriptive image alt followed by separate
+    Chinese and English figure-title paragraphs. Pandoc turns the alt into an
+    additional Image Caption. After the explicit title paragraphs are styled,
+    a repeated caption language identifies that first paragraph as redundant.
+    """
+    body = document_root.find(W("body"))
+    if body is None:
+        return 0
+    removed = 0
+    children = list(body)
+    index = 0
+    while index < len(children):
+        picture = children[index]
+        if not (
+            picture.tag == W("p")
+            and picture.xpath(".//w:drawing|.//w:pict", namespaces=NS)
+        ):
+            index += 1
+            continue
+        captions: list[etree._Element] = []
+        cursor = index + 1
+        while cursor < len(children):
+            if is_transparent_body_marker(children[cursor]):
+                cursor += 1
+                continue
+            if children[cursor].tag != W("p"):
+                break
+            paragraph = children[cursor]
+            style_values = paragraph.xpath(
+                "./w:pPr/w:pStyle/@w:val",
+                namespaces=NS,
+            )
+            if not style_values or style_values[0] != image_caption_style_id:
+                break
+            captions.append(paragraph)
+            cursor += 1
+        signatures = [
+            caption_signature(
+                paragraph_text(paragraph),
+                caption_kind="figure",
+            )
+            for paragraph in captions
+        ]
+        if len(captions) >= 2 and signatures[0] is not None:
+            first_number, first_language = signatures[0]
+            repeated_language = any(
+                signature is not None
+                and signature[0] == first_number
+                and signature[1] == first_language
+                for signature in signatures[1:]
+            )
+            if repeated_language:
+                body.remove(captions[0])
+                removed += 1
+                children = list(body)
+                continue
+        index = cursor
+    return removed
 
 
 def eligible_reflow_paragraph(
@@ -2802,6 +2912,15 @@ def patch_docx(
             styles=styles,
             format_config=format_config,
         )
+        duplicate_image_captions_removed = (
+            remove_redundant_generated_image_captions(
+                document,
+                image_caption_style_id=get_style_id(
+                    styles,
+                    "Image Caption",
+                ),
+            )
+        )
         inserted_bibliography = insert_bibliography_field(
             document,
             bibliography_style_id=get_style_id(styles, "Bibliography"),
@@ -2921,6 +3040,9 @@ def patch_docx(
         "numbered_equations_wrapped": wrapped_equations,
         "resized_images": image_resize_report.get("total", 0),
         "image_resize": image_resize_report,
+        "duplicate_image_captions_removed": (
+            duplicate_image_captions_removed
+        ),
         "figure_reflow": figure_reflow_report,
         "quote_run_splits": quote_splits,
         "raw_script_baseline": raw_script_baseline,
@@ -4021,6 +4143,8 @@ def main() -> int:
         f"纵向缩放 {resize_report.get('height', 0)} 张；"
         f"回填 {reflow_report['figures_reflowed']} 处；"
         f"提前正文 {reflow_report['paragraphs_moved']} 段；"
+        "清理重复图名 "
+        f"{format_report['duplicate_image_captions_removed']} 个；"
         "原始 Markdown 未修改。"
     )
     print(f"Word：{output_path}")

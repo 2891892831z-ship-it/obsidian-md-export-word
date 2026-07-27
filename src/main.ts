@@ -14,7 +14,7 @@ import * as path from "node:path";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.4.2";
+const PLUGIN_VERSION = "1.4.4";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_TARGETS = Object.freeze({

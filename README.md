@@ -110,7 +110,8 @@ Windows 运行时由 `scripts/build-runtime.ps1` 构建；macOS Apple Silicon
 
 `1.4.0` 起提供 Windows x64、macOS Apple Silicon 和 macOS Intel 三套
 运行时；`1.4.2` 起支持在 Zotero Refresh 后生成保留动态域的蓝色引文副本；
-`1.4.3` 起支持大图纵向限高和同小节正文分页回填。
+`1.4.3` 起支持大图纵向限高和同小节正文分页回填；`1.4.4` 起会把中英文
+图名和中英文图注作为一个整体处理，并自动清理 Pandoc 生成的重复图名。
 发布时由 GitHub Actions 在对应系统上分别执行真实导出烟雾测试，再生成同
 版本 Release 资产。Release 标签使用纯版本号，不带 `v`。
 
