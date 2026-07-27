@@ -14,7 +14,7 @@ import * as path from "node:path";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.4.1";
+const PLUGIN_VERSION = "1.4.2";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_TARGETS = Object.freeze({
@@ -292,6 +292,66 @@ class ExportModeModal extends Modal {
     new Setting(contentEl).addButton((button) =>
       button.setButtonText("取消").onClick(() => this.close())
     );
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    if (!this.resolved) {
+      this.resolved = true;
+      this.resolve(null);
+    }
+  }
+}
+
+class WordFileSelectModal extends Modal {
+  constructor(app, files, resolve) {
+    super(app);
+    this.files = files;
+    this.resolve = resolve;
+    this.resolved = false;
+    this.selectedPath = files[0]?.path || "";
+  }
+
+  finish(value) {
+    if (this.resolved) {
+      return;
+    }
+    this.resolved = true;
+    this.resolve(value);
+    this.close();
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h2", { text: "恢复 Word 中的蓝色 Zotero 引文" });
+    contentEl.createEl("p", {
+      text:
+        "请先在 Word 中完成 Zotero Refresh 并保存文档，最好关闭该文档。" +
+        "程序会生成新副本，不覆盖源 Word；正文引文设为蓝色，文末参考文献保持黑色。"
+    });
+
+    new Setting(contentEl)
+      .setName("选择 Word 文件")
+      .setDesc("列出当前 Markdown 所在文件夹中的 .docx，最近修改的排在最前。")
+      .addDropdown((dropdown) => {
+        for (const file of this.files) {
+          dropdown.addOption(file.path, file.label);
+        }
+        dropdown.setValue(this.selectedPath).onChange((value) => {
+          this.selectedPath = value;
+        });
+      });
+
+    new Setting(contentEl)
+      .addButton((button) =>
+        button
+          .setButtonText("生成蓝色引文副本")
+          .setCta()
+          .onClick(() => this.finish(this.selectedPath))
+      )
+      .addButton((button) =>
+        button.setButtonText("取消").onClick(() => this.finish(null))
+      );
   }
 
   onClose() {
@@ -648,16 +708,19 @@ class FormatSettingsModal extends Modal {
 }
 
 class ExportProgressModal extends Modal {
-  constructor(app, fileName) {
+  constructor(app, fileName, options = {}) {
     super(app);
     this.fileName = fileName;
+    this.modalTitle = options.title || "正在导出 Word";
+    this.successStage = options.successStage || "导出完成";
+    this.failureStage = options.failureStage || "导出失败";
     this.logLines = [];
     this.lastPercent = 0;
     this.closedByUser = false;
   }
 
   onOpen() {
-    this.titleEl.setText("正在导出 Word");
+    this.titleEl.setText(this.modalTitle);
     this.contentEl.addClass("md-export-word-progress-modal");
     this.contentEl.createDiv({
       cls: "md-export-word-progress-file",
@@ -838,7 +901,7 @@ class ExportProgressModal extends Modal {
   }
 
   complete(wordName) {
-    this.updateProgress(100, "导出完成", wordName, "success");
+    this.updateProgress(100, this.successStage, wordName, "success");
     if (!this.actionsEl) {
       return;
     }
@@ -858,7 +921,7 @@ class ExportProgressModal extends Modal {
   fail(summary, logPath) {
     this.updateProgress(
       100,
-      "导出失败",
+      this.failureStage,
       logPath ? `错误日志：${logPath}` : summary,
       "error"
     );
@@ -1130,6 +1193,25 @@ export default class MdExportWordPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "reapply-blue-zotero-citations",
+      name: "Reapply blue Zotero citations to exported Word",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canRecolor = Boolean(
+          file &&
+          typeof file.extension === "string" &&
+          file.extension.toLowerCase() === "md"
+        );
+
+        if (canRecolor && !checking) {
+          void this.recolorWordCitationsForCurrentFile(file);
+        }
+
+        return canRecolor;
+      }
+    });
+
+    this.addCommand({
       id: "install-or-repair-runtime",
       name: "Install or repair Word export runtime",
       callback: () => {
@@ -1215,6 +1297,7 @@ export default class MdExportWordPlugin extends Plugin {
       target,
       manifest: path.join(root, RUNTIME_MANIFEST),
       exporter: path.join(root, "scripts", "md_export_word_template.py"),
+      recolor: path.join(root, "scripts", "recolor_zotero_citations.py"),
       doctor: path.join(root, "scripts", "doctor.py"),
       pandoc: path.join(binaryRoot, target.pandocFile),
       crossref: path.join(binaryRoot, target.crossrefFile),
@@ -1271,6 +1354,7 @@ export default class MdExportWordPlugin extends Plugin {
     const required = [
       runtimePaths.manifest,
       runtimePaths.exporter,
+      runtimePaths.recolor,
       runtimePaths.doctor,
       runtimePaths.pandoc,
       runtimePaths.crossref,
@@ -1584,6 +1668,233 @@ export default class MdExportWordPlugin extends Plugin {
         resolve
       ).open();
     });
+  }
+
+  selectWordFile(files) {
+    return new Promise((resolve) => {
+      new WordFileSelectModal(this.app, files, resolve).open();
+    });
+  }
+
+  async recolorWordCitationsForCurrentFile(file) {
+    const adapter = this.app.vault.adapter;
+    if (typeof adapter.getBasePath !== "function") {
+      new Notice("当前知识库不是本地文件系统，无法处理 Word。");
+      return;
+    }
+
+    let runtimeStatus = this.runtimeStatus();
+    if (!runtimeStatus.ready) {
+      const installed = await this.installRuntime();
+      if (!installed) {
+        return;
+      }
+      runtimeStatus = this.runtimeStatus();
+      if (!runtimeStatus.ready) {
+        new Notice(`运行时仍不可用：${runtimeStatus.message}`, 12000);
+        return;
+      }
+    }
+
+    const runtimePaths = this.runtimePaths(this.getRuntimeRoot());
+    if (
+      !runtimePaths ||
+      !fs.existsSync(runtimePaths.python) ||
+      !fs.existsSync(runtimePaths.recolor)
+    ) {
+      new Notice("未找到 Zotero 引文着色程序，请安装或修复运行时。");
+      return;
+    }
+
+    const markdownPath = path.join(adapter.getBasePath(), file.path);
+    const directory = path.dirname(markdownPath);
+    let wordFiles = [];
+    try {
+      wordFiles = fs
+        .readdirSync(directory, { withFileTypes: true })
+        .filter(
+          (entry) =>
+            entry.isFile() &&
+            !entry.name.startsWith("~$") &&
+            entry.name.toLowerCase().endsWith(".docx")
+        )
+        .map((entry) => {
+          const wordPath = path.join(directory, entry.name);
+          const modified = fs.statSync(wordPath).mtime;
+          return {
+            path: wordPath,
+            modified,
+            label:
+              `${entry.name} · ` +
+              modified.toLocaleString("zh-CN", { hour12: false })
+          };
+        })
+        .sort((a, b) => b.modified.getTime() - a.modified.getTime());
+    } catch (error) {
+      new Notice(`无法读取当前文件夹中的 Word：${error.message}`, 10000);
+      return;
+    }
+    if (!wordFiles.length) {
+      new Notice("当前 Markdown 所在文件夹中没有可处理的 .docx 文件。");
+      return;
+    }
+
+    const selectedPath = await this.selectWordFile(wordFiles);
+    if (!selectedPath) {
+      new Notice("已取消 Zotero 引文着色。");
+      return;
+    }
+    if (!fs.existsSync(selectedPath)) {
+      new Notice(`所选 Word 已不存在：${selectedPath}`, 10000);
+      return;
+    }
+
+    const requestedOutput = path.join(
+      path.dirname(selectedPath),
+      `${path.basename(selectedPath, path.extname(selectedPath))}-引文蓝色.docx`
+    );
+    const outputPath = uniqueOutputPath(requestedOutput);
+    const failureLogPath = path.join(
+      path.dirname(selectedPath),
+      `${path.basename(selectedPath, path.extname(selectedPath))}-引文着色失败.log.txt`
+    );
+    if (fs.existsSync(failureLogPath)) {
+      try {
+        fs.unlinkSync(failureLogPath);
+      } catch {
+        // A stale diagnostic can remain open without blocking the new run.
+      }
+    }
+
+    const progressModal = new ExportProgressModal(
+      this.app,
+      path.basename(selectedPath),
+      {
+        title: "正在恢复 Zotero 引文颜色",
+        successStage: "引文着色完成",
+        failureStage: "引文着色失败"
+      }
+    );
+    progressModal.open();
+    progressModal.updateProgress(
+      1,
+      "启动引文着色程序",
+      "源 Word 不覆盖；Zotero 域保持可刷新"
+    );
+
+    const recolorArgs = [
+      "-B",
+      runtimePaths.recolor,
+      selectedPath,
+      "--output",
+      outputPath
+    ];
+    if (this.exportSettings.autoOpen === false) {
+      recolorArgs.push("--no-open");
+    }
+    let output = "";
+    let failedToStart = false;
+    const child = spawn(runtimePaths.python, recolorArgs, {
+      cwd: path.dirname(runtimePaths.recolor),
+      env: {
+        ...process.env,
+        PYTHONUTF8: "1",
+        PYTHONDONTWRITEBYTECODE: "1",
+        PYTHONUNBUFFERED: "1",
+        MD_EXPORT_WORD_FAILURE_LOG: failureLogPath
+      },
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const lineBuffers = { stdout: "", stderr: "" };
+    const collectOutput = (data, streamName) => {
+      const text = data.toString("utf8");
+      output += text;
+      if (output.length > 12000) {
+        output = output.slice(-12000);
+      }
+      lineBuffers[streamName] += text;
+      const lines = lineBuffers[streamName].split(/\r?\n/);
+      lineBuffers[streamName] = lines.pop() || "";
+      for (const line of lines) {
+        progressModal.consumeLine(line, streamName === "stderr");
+      }
+    };
+    const flushLineBuffers = () => {
+      for (const streamName of ["stdout", "stderr"]) {
+        if (lineBuffers[streamName]) {
+          progressModal.consumeLine(
+            lineBuffers[streamName],
+            streamName === "stderr"
+          );
+          lineBuffers[streamName] = "";
+        }
+      }
+    };
+    child.stdout.on("data", (data) => collectOutput(data, "stdout"));
+    child.stderr.on("data", (data) => collectOutput(data, "stderr"));
+    child.once("error", (error) => {
+      failedToStart = true;
+      const launchError = `启动引文着色失败：${error.message}`;
+      output += `\n${launchError}\n`;
+      try {
+        appendFailureProcessOutput(failureLogPath, output);
+      } catch {
+        // The launch error is still visible in the modal and Notice.
+      }
+      progressModal.fail(launchError, failureLogPath);
+      new Notice(launchError, 10000);
+    });
+    child.once("close", (code) => {
+      flushLineBuffers();
+      if (failedToStart) {
+        return;
+      }
+      if (code === 0) {
+        const wordMatch = output.match(/Word：([^\r\n]+)/);
+        const wordName = wordMatch
+          ? path.basename(wordMatch[1].trim())
+          : path.basename(outputPath);
+        if (fs.existsSync(failureLogPath)) {
+          try {
+            fs.unlinkSync(failureLogPath);
+          } catch {
+            // Do not turn successful recoloring into a failure.
+          }
+        }
+        progressModal.complete(wordName);
+        new Notice(`Zotero 引文已恢复为蓝色：${wordName}`, 10000);
+        return;
+      }
+
+      try {
+        appendFailureProcessOutput(failureLogPath, output);
+      } catch {
+        // Python already attempted to write its own failure report.
+      }
+      const details = humanizeProcessOutput(output)
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-4)
+        .join("；");
+      progressModal.fail(
+        details || `引文着色失败，退出代码 ${code}。`,
+        failureLogPath
+      );
+      new Notice(
+        details
+          ? `引文着色失败（${code}）：${details}`
+          : `引文着色失败，退出代码 ${code}。`,
+        12000
+      );
+    });
+
+    new Notice(
+      `正在生成蓝色引文副本：${path.basename(outputPath)}`,
+      8000
+    );
   }
 
   async exportCurrentFile(file) {
