@@ -14,6 +14,8 @@
 - 支持 Pandoc、pandoc-crossref、公式编号、图表交叉引用和 Word 公式。
 - 严格模式：Zotero 缺少 citekey 时停止；兼容模式：保留醒目占位符并继续导出。
 - Zotero 引文和参考文献写成可刷新域，后续可在 Word 中执行 Zotero Refresh。
+- Zotero Refresh 覆盖正文引文颜色后，可从命令面板生成蓝色引文副本；
+  不覆盖源 Word、不删除 Zotero 域，Windows 与 macOS 均可使用。
 - 期刊、毕业论文等多个 `.docx` 模板可选；自定义模板不会被运行时更新覆盖。
 - 正文字体、字号、行距、缩进、标题、表格、图表题、图表注、公式和页边距可配置。
 - 导出后自动检查公式结构、引用域、表格、图注、空白和关键 OOXML 属性。
@@ -47,6 +49,9 @@
    `MD Export Word: Check Word export runtime`。
 7. 打开一篇 Markdown，运行
    `MD Export Word: Export current Markdown to Word`。
+
+如果 Zotero Refresh 后正文引文变黑，保存 Word，再在对应 Markdown 中运行
+`MD Export Word: Reapply blue Zotero citations to exported Word`。
 
 首次运行时，插件会从同版本 GitHub Release 自动选择并下载：
 
@@ -102,8 +107,9 @@ Windows 运行时由 `scripts/build-runtime.ps1` 构建；macOS Apple Silicon
 ## 项目状态
 
 `1.4.0` 起提供 Windows x64、macOS Apple Silicon 和 macOS Intel 三套
-运行时。发布时由 GitHub Actions 在对应系统上分别执行真实导出烟雾测试，
-再生成同版本 Release 资产。Release 标签使用纯版本号，不带 `v`。
+运行时；`1.4.2` 起支持在 Zotero Refresh 后生成保留动态域的蓝色引文副本。
+发布时由 GitHub Actions 在对应系统上分别执行真实导出烟雾测试，再生成同
+版本 Release 资产。Release 标签使用纯版本号，不带 `v`。
 
 ## 许可证
 

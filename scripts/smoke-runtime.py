@@ -8,6 +8,12 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from xml.etree import ElementTree as ET
+from zipfile import ZIP_DEFLATED, ZipFile
+
+
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W = f"{{{W_NS}}}"
 
 
 def sha256_file(path: Path) -> str:
@@ -46,6 +52,69 @@ def require(condition: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
+def write_zotero_color_fixture(path: Path) -> None:
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>
+"""
+    document = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="{W_NS}">
+  <w:body>
+    <w:p>
+      <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+      <w:r><w:instrText xml:space="preserve"> ADDIN ZOTERO_ITEM CSL_CITATION {{}}</w:instrText></w:r>
+      <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+      <w:r>
+        <w:rPr><w:color w:val="000000"/><w:u w:val="single"/></w:rPr>
+        <w:t>(Example, 2026)</w:t>
+      </w:r>
+      <w:r><w:fldChar w:fldCharType="end"/></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+      <w:r><w:instrText xml:space="preserve"> ADDIN ZOTERO_BIBL {{}}</w:instrText></w:r>
+      <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+      <w:r>
+        <w:rPr><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr>
+        <w:t>Example reference.</w:t>
+      </w:r>
+      <w:r><w:fldChar w:fldCharType="end"/></w:r>
+    </w:p>
+    <w:sectPr/>
+  </w:body>
+</w:document>
+"""
+    with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("word/document.xml", document)
+
+
+def visible_run_format(path: Path, text: str) -> tuple[str, str]:
+    with ZipFile(path) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+    for run in root.iter(W + "r"):
+        value = "".join(
+            node.text or "" for node in run.iter(W + "t")
+        )
+        if value != text:
+            continue
+        properties = run.find(W + "rPr")
+        color = ""
+        underline = ""
+        if properties is not None:
+            color_node = properties.find(W + "color")
+            underline_node = properties.find(W + "u")
+            if color_node is not None:
+                color = color_node.get(W + "val", "")
+            if underline_node is not None:
+                underline = underline_node.get(W + "val", "")
+        return color, underline
+    raise RuntimeError(f"Fixture text not found: {text}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pandoc", required=True, type=Path)
@@ -56,6 +125,9 @@ def main() -> int:
     workspace = args.workspace.resolve()
     exporter = (
         workspace / "runtime" / "scripts" / "md_export_word_template.py"
+    )
+    recolor = (
+        workspace / "runtime" / "scripts" / "recolor_zotero_citations.py"
     )
     smoke = workspace / "tests" / "fixtures" / "smoke.md"
     strict_english_caption = (
@@ -77,6 +149,9 @@ def main() -> int:
     strict_english_caption_word = (
         output_dir / "strict-english-caption.docx"
     )
+    recolor_source = output_dir / "zotero-color-source.docx"
+    recolor_word = output_dir / "zotero-color-output.docx"
+    recolor_log = output_dir / "zotero-color-failure.log.txt"
     failure_word = output_dir / "must-not-exist.docx"
     failure_log = output_dir / "expected-failure.log.txt"
     generated = [
@@ -87,6 +162,9 @@ def main() -> int:
         custom_word,
         strict_log,
         strict_english_caption_word,
+        recolor_source,
+        recolor_word,
+        recolor_log,
         failure_word,
         failure_log,
     ]
@@ -151,6 +229,42 @@ def main() -> int:
         require(
             len(timestamped) == 1,
             "Timestamped duplicate Word was not generated exactly once",
+        )
+
+        write_zotero_color_fixture(recolor_source)
+        env.pop("MD_EXPORT_WORD_OUTPUT", None)
+        env["MD_EXPORT_WORD_FAILURE_LOG"] = str(recolor_log)
+        recolor_result = subprocess.run(
+            [
+                str(Path(sys.executable)),
+                "-B",
+                str(recolor),
+                str(recolor_source),
+                "--output",
+                str(recolor_word),
+                "--no-open",
+            ],
+            cwd=recolor.parent,
+            env=env,
+            check=False,
+        )
+        require(
+            recolor_result.returncode == 0 and recolor_word.is_file(),
+            "Zotero citation recoloring failed",
+        )
+        require(
+            visible_run_format(recolor_word, "(Example, 2026)")
+            == ("0000FF", "none"),
+            "ZOTERO_ITEM was not blue without underline",
+        )
+        require(
+            visible_run_format(recolor_word, "Example reference.")
+            == ("000000", "none"),
+            "ZOTERO_BIBL was not black without underline",
+        )
+        require(
+            not recolor_log.exists(),
+            "Successful citation recoloring generated a failure log",
         )
 
         env.pop("MD_EXPORT_WORD_OUTPUT", None)

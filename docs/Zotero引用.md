@@ -51,6 +51,26 @@ http://127.0.0.1:23119/better-bibtex/json-rpc
 或旧模板遗留字段，不是导出 Zotero 引文本身的必要提示。应先在模板中清理
 外部链接，再重新导出。
 
+## Refresh 后恢复正文引文蓝色
+
+导出器会把正文 `ZOTERO_ITEM` 引文设为蓝色，并把文末
+`ZOTERO_BIBL` 参考文献保持为黑色。Zotero 的 **Refresh** 会重新生成域的
+显示文本，因此可能覆盖 Word 中原有的直接颜色格式。这是 Zotero 更新动态
+引文的工作方式，静态 `.docx` 无法在保留可刷新域的同时拦截这次重写。
+
+本插件提供无宏、跨平台的恢复命令：
+
+1. 在 Word 中执行 Zotero **Refresh**；
+2. 保存 Word，最好关闭当前文档；
+3. 回到对应 Markdown，打开 Obsidian 命令面板；
+4. 执行 **Reapply blue Zotero citations to exported Word**；
+5. 从当前 Markdown 所在文件夹中选择刚保存的 `.docx`；
+6. 插件生成新的 `-引文蓝色.docx`；同名时自动添加年月日时间戳。
+
+该操作不会覆盖源 Word，也不会解除或删除 Zotero 域。生成的新副本仍可继续
+刷新；如果再次 Refresh，颜色再次被 Zotero 重写，只需在保存后重新执行该
+命令。文末参考文献不会被设为蓝色。
+
 ## 常见错误
 
 ### 无法连接 Better BibTeX

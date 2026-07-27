@@ -47,6 +47,9 @@ def main() -> int:
         "Python exporter": RUNTIME_ROOT
         / "scripts"
         / "md_export_word_template.py",
+        "Zotero citation recolor": RUNTIME_ROOT
+        / "scripts"
+        / "recolor_zotero_citations.py",
         "True-script Lua filter": RUNTIME_ROOT
         / "scripts"
         / "true_scripts.lua",

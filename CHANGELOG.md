@@ -11,6 +11,16 @@
 - 把遗留 UI 代码完全迁移为严格 TypeScript；
 - 增加模板可视化预览。
 
+## [1.4.2] - 2026-07-27
+
+### Added
+
+- 新增命令 “Reapply blue Zotero citations to exported Word”。Zotero Refresh
+  后可选择当前 Markdown 同目录的 Word，一键生成时间戳副本；正文
+  `ZOTERO_ITEM` 引文恢复为蓝色，文末 `ZOTERO_BIBL` 参考文献保持黑色。
+- 引文着色只修改 DOCX 中的显示格式，不删除 Zotero 域，也不覆盖源 Word；
+  Windows 与 macOS 使用同一套 OOXML 处理和自动校验。
+
 ## [1.4.1] - 2026-07-27
 
 ### Fixed
