@@ -153,7 +153,11 @@ def recolor_docx(source_path: Path, output_path: Path) -> dict[str, int]:
 
 def main() -> int:
     configure_console()
-    emit_progress(2, "初始化引文着色")
+    emit_progress(
+        2,
+        "初始化引文着色",
+        stage_key="progress.recolor.init",
+    )
     args = parse_args()
     source_path = args.docx.expanduser().resolve()
     if not source_path.is_file():
@@ -171,14 +175,31 @@ def main() -> int:
         raise ExportError("输出不能覆盖源 Word")
     output_path = unique_output_path(requested_output)
 
-    emit_progress(20, "读取 Word", source_path.name)
-    emit_progress(45, "识别 Zotero 域", "正文引文与文末参考文献")
+    emit_progress(
+        20,
+        "读取 Word",
+        source_path.name,
+        stage_key="progress.recolor.readWord",
+    )
+    emit_progress(
+        45,
+        "识别 Zotero 域",
+        "正文引文与文末参考文献",
+        stage_key="progress.recolor.detectFields",
+        detail_key="progress.recolor.detectFieldsDetail",
+    )
     counts = recolor_docx(source_path, output_path)
     emit_progress(
         85,
         "检查引文颜色",
         f"正文引文域 {counts['ZOTERO_ITEM']}；"
         f"参考文献域 {counts['ZOTERO_BIBL']}",
+        stage_key="progress.recolor.checkColors",
+        detail_key="progress.recolor.checkColorsDetail",
+        params={
+            "citations": counts["ZOTERO_ITEM"],
+            "bibliography": counts["ZOTERO_BIBL"],
+        },
     )
     print("\n引文着色成功。")
     print(
@@ -188,12 +209,23 @@ def main() -> int:
     print("Zotero 域已保留；源 Word 未被覆盖。")
     print(f"Word：{output_path}")
     if not args.no_open:
-        emit_progress(95, "正在打开 Word", output_path.name)
+        emit_progress(
+            95,
+            "正在打开 Word",
+            output_path.name,
+            stage_key="progress.recolor.openWord",
+        )
         try:
             open_output_document(output_path)
         except Exception as exc:
             print(f"无法自动打开 Word：{exc}")
-    emit_progress(100, "引文着色完成", output_path.name, level="success")
+    emit_progress(
+        100,
+        "引文着色完成",
+        output_path.name,
+        level="success",
+        stage_key="progress.recolor.complete",
+    )
     return 0
 
 
@@ -201,19 +233,38 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except ExportError as exc:
-        emit_progress(100, "引文着色失败", str(exc), level="error")
+        emit_progress(
+            100,
+            "引文着色失败",
+            str(exc),
+            level="error",
+            stage_key="progress.recolor.failed",
+        )
         error_log = write_failure_log(exc)
         print(f"\n错误：{exc}", file=sys.stderr, flush=True)
         if error_log:
             print(f"错误日志：{error_log}", file=sys.stderr, flush=True)
         raise SystemExit(1)
     except KeyboardInterrupt:
-        emit_progress(100, "已取消", "用户中止引文着色", level="warning")
+        emit_progress(
+            100,
+            "已取消",
+            "用户中止引文着色",
+            level="warning",
+            stage_key="progress.recolor.cancelled",
+            detail_key="progress.recolor.cancelledDetail",
+        )
         print("\n已取消。", file=sys.stderr, flush=True)
         raise SystemExit(130)
     except Exception as exc:
         traceback_text = traceback.format_exc()
-        emit_progress(100, "引文着色失败", str(exc), level="error")
+        emit_progress(
+            100,
+            "引文着色失败",
+            str(exc),
+            level="error",
+            stage_key="progress.recolor.failed",
+        )
         error_log = write_failure_log(exc, traceback_text)
         print(f"\n未预期错误：{exc}", file=sys.stderr, flush=True)
         if error_log:

@@ -50,6 +50,10 @@ if (citationVersion !== manifest.version) {
 
 const required = [
   "src/main.ts",
+  "src/i18n.ts",
+  "src/locales/en.ts",
+  "src/locales/zh-cn.ts",
+  "src/runtime-download.ts",
   "src/runtime-install.ts",
   "main.js",
   "manifest.json",
@@ -66,6 +70,10 @@ const required = [
   "runtime/Word-Template/导出格式模板.docx",
   "README.md",
   "scripts/test-runtime-install.mjs",
+  "scripts/test-i18n.mjs",
+  "scripts/test-runtime-download.mjs",
+  "tests/i18n.test.ts",
+  "tests/runtime-download.test.ts",
   "tests/runtime-install.test.ts",
   "LICENSE"
 ];

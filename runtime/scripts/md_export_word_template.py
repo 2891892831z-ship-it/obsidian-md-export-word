@@ -80,6 +80,7 @@ DEFAULT_FORMAT_CONFIG: dict[str, Any] = {
     "title_line_spacing": 1.5,
     "heading2_size_pt": 14.0,
     "heading3_size_pt": 12.0,
+    "heading4_size_pt": 12.0,
     "heading_line_spacing": 1.5,
     "table_size_pt": 7.5,
     "table_line_spacing": 1.0,
@@ -100,6 +101,7 @@ FORMAT_NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
     "title_line_spacing": (0.8, 3.0),
     "heading2_size_pt": (5.0, 36.0),
     "heading3_size_pt": (5.0, 36.0),
+    "heading4_size_pt": (5.0, 36.0),
     "heading_line_spacing": (0.8, 3.0),
     "table_size_pt": (5.0, 24.0),
     "table_line_spacing": (0.8, 3.0),
@@ -221,13 +223,20 @@ def emit_progress(
     detail: str = "",
     *,
     level: str = "info",
+    stage_key: str = "",
+    detail_key: str = "",
+    params: dict[str, Any] | None = None,
 ) -> None:
     payload = {
         "percent": max(0, min(100, int(percent))),
         "stage": stage,
         "detail": detail,
         "level": level,
+        "stageKey": stage_key,
+        "params": dict(params or {}),
     }
+    if detail_key:
+        payload["detailKey"] = detail_key
     print(
         "@@MD_EXPORT_PROGRESS@@"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
@@ -606,7 +615,7 @@ def normalize_paragraph_text(
             )
 
     keep_spaces: set[int] = set()
-    if role in {"heading2", "heading3"}:
+    if role in {"heading2", "heading3", "heading4"}:
         match = re.match(r"^\d+(?:\.\d+)*(\s+)", plain)
         if match:
             keep_spaces.add(match.start(1))
@@ -974,21 +983,31 @@ def label_numbered_equations(text: str) -> tuple[str, list[int]]:
     delimiter_indexes = [
         index
         for index, line in enumerate(lines)
-        if re.match(r"^\$\$(?:\s+\{#eq:[^}]+\})?\s*$", line.strip())
+        if re.match(r"^\$\$\s*$", line.strip())
+        or re.match(r"^\$\$\s+\{#eq:[^}]+\}\s*$", line.strip())
     ]
     if len(delimiter_indexes) % 2:
         raise ExportError("Markdown 行间公式的 $$ 分隔符数量不是偶数")
 
     assigned: list[int] = []
+    replacements: dict[int, list[str]] = {}
     for pair in range(0, len(delimiter_indexes), 2):
         opening = delimiter_indexes[pair]
         closing = delimiter_indexes[pair + 1]
         before = previous_nonempty(lines, opening)
-        after = next_nonempty(lines, closing)
-        existing_label = re.match(
-            r"^\$\$\s+\{#eq:[^}]+\}\s*$",
+        inline_label = re.match(
+            r"^\$\$\s+\{#eq:([^}]+)\}\s*$",
             lines[closing].strip(),
         )
+        standalone_label = None
+        if closing + 1 < len(lines):
+            standalone_label = re.match(
+                r"^\{#eq:([^}]+)\}\s*$",
+                lines[closing + 1].strip(),
+            )
+        existing_label = inline_label or standalone_label
+        after_index = closing + 1 if standalone_label else closing
+        after = next_nonempty(lines, after_index)
         number: int | None = None
         equation_source = "\n".join(lines[opening + 1 : closing])
         explicit_tags = re.findall(
@@ -1014,10 +1033,18 @@ def label_numbered_equations(text: str) -> tuple[str, list[int]]:
                     number = int(matches_before[-1])
         if existing_label and number is None:
             number = max(assigned, default=0) + 1
+        if inline_label:
+            replacements[closing] = ["$$", f"{{#eq:{inline_label.group(1)}}}"]
         if number is not None and number not in assigned:
             if not existing_label:
-                lines[closing] = f"$$ {{#eq:paperbell-{number}}}"
+                replacements[closing] = ["$$", f"{{#eq:paperbell-{number}}}"]
             assigned.append(number)
+
+    for closing in sorted(replacements, reverse=True):
+        lines[closing : closing + 1] = replacements[closing]
+        label_index = closing + 1
+        if label_index + 1 >= len(lines) or lines[label_index + 1].strip():
+            lines.insert(label_index + 1, "")
     return "\n".join(lines) + "\n", assigned
 
 
@@ -2333,12 +2360,15 @@ def role_for_paragraph(
     text = paragraph_text(paragraph)
     if text == "参考文献":
         return "reference_heading"
-    if name.lower() in {"heading 1", "title"}:
+    normalized_name = re.sub(r"\s+", "", name).lower()
+    if name.lower() in {"heading 1", "title", "标题 1", "标题1"}:
         return "title"
-    if name.lower() == "heading 2":
+    if normalized_name in {"heading2", "标题2"}:
         return "heading2"
-    if name.lower() == "heading 3":
+    if normalized_name in {"heading3", "标题3"}:
         return "heading3"
+    if normalized_name in {"heading4", "标题4"}:
+        return "heading4"
     if name == "Image Caption":
         return "image_caption"
     if name == "Table Caption":
@@ -2703,9 +2733,18 @@ def format_body_paragraphs(
         "normal": get_style_id(styles, "Normal"),
         "body": get_style_id(styles, "Body Text"),
         "first": get_style_id(styles, "First Paragraph"),
-        "title": get_style_id(styles, "heading 1", "Heading 1"),
-        "heading2": get_style_id(styles, "heading 2", "Heading 2"),
-        "heading3": get_style_id(styles, "heading 3", "Heading 3"),
+        "title": get_style_id(
+            styles, "heading 1", "Heading 1", "标题 1", "标题1"
+        ),
+        "heading2": get_style_id(
+            styles, "heading 2", "Heading 2", "标题 2", "标题2"
+        ),
+        "heading3": get_style_id(
+            styles, "heading 3", "Heading 3", "标题 3", "标题3"
+        ),
+        "heading4": get_style_id(
+            styles, "heading 4", "Heading 4", "标题 4", "标题4"
+        ),
         "picture": get_style_id(styles, "图片", "Body Text", "Normal"),
         "image_caption": get_style_id(styles, "Image Caption"),
         "table_caption": get_style_id(styles, "Table Caption"),
@@ -2734,12 +2773,17 @@ def format_body_paragraphs(
             pstyle = direct(ppr, W("pStyle"))
             style_id = pstyle.get(W("val")) if pstyle is not None else None
         style_name = id_to_name.get(style_id, "")
-        if style_name.lower() == "heading 2":
+        if re.sub(r"\s+", "", style_name).lower() in {
+            "heading2",
+            "标题2",
+        }:
             in_highlights = text == "Highlights"
         role = role_for_paragraph(
             paragraph,
             style_names=id_to_name,
-            in_highlights=in_highlights and style_name.lower() != "heading 2",
+            in_highlights=in_highlights
+            and re.sub(r"\s+", "", style_name).lower()
+            not in {"heading2", "标题2"},
         )
         counts[role] += 1
 
@@ -2783,6 +2827,19 @@ def format_body_paragraphs(
                 keep_lines=True,
             )
             size = float(format_config["heading3_size_pt"])
+        elif role == "heading4":
+            set_paragraph_style(paragraph, ids["heading4"])
+            set_paragraph_format(
+                paragraph,
+                alignment="left",
+                before=80,
+                after=40,
+                line=line_twips(float(format_config["heading_line_spacing"])),
+                first_line=0,
+                keep_next=True,
+                keep_lines=True,
+            )
+            size = float(format_config["heading4_size_pt"])
         elif role == "picture":
             set_paragraph_style(paragraph, ids["picture"])
             set_paragraph_format(
@@ -3273,7 +3330,9 @@ def validate_docx(
             "Normal",
             "Compact",
         )
-        title_style_id = get_style_id(styles, "heading 1", "Heading 1")
+        title_style_id = get_style_id(
+            styles, "heading 1", "Heading 1", "标题 1", "标题1"
+        )
         body_paragraphs = document.xpath(
             ".//w:body//w:p[not(ancestor::w:tbl)]", namespaces=NS
         )
@@ -3293,6 +3352,10 @@ def validate_docx(
             ),
             "heading3": (
                 float(format_config["heading3_size_pt"]),
+                line_twips(float(format_config["heading_line_spacing"])),
+            ),
+            "heading4": (
+                float(format_config["heading4_size_pt"]),
                 line_twips(float(format_config["heading_line_spacing"])),
             ),
             "image_caption": (
@@ -3327,13 +3390,18 @@ def validate_docx(
             )
             style_name = id_to_name.get(pstyle, "")
             text_value = paragraph_text(paragraph)
-            if style_name.lower() == "heading 2":
+            if re.sub(r"\s+", "", style_name).lower() in {
+                "heading2",
+                "标题2",
+            }:
                 in_highlights = text_value == "Highlights"
             role = role_for_paragraph(
                 paragraph,
                 style_names=id_to_name,
                 in_highlights=(
-                    in_highlights and style_name.lower() != "heading 2"
+                    in_highlights
+                    and re.sub(r"\s+", "", style_name).lower()
+                    not in {"heading2", "标题2"}
                 ),
             )
             if role == "picture" or not text_value:
@@ -3887,7 +3955,11 @@ def open_output_document(output_path: Path) -> None:
 
 def main() -> int:
     configure_console()
-    emit_progress(2, "初始化导出环境")
+    emit_progress(
+        2,
+        "初始化导出环境",
+        stage_key="progress.export.init",
+    )
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
     pandoc_root = script_dir.parent
@@ -3940,7 +4012,12 @@ def main() -> int:
     if md_path.suffix.lower() not in (".md", ".markdown"):
         raise ExportError(f"输入必须是 Markdown：{md_path}")
 
-    emit_progress(8, "读取 Markdown", md_path.name)
+    emit_progress(
+        8,
+        "读取 Markdown",
+        md_path.name,
+        stage_key="progress.export.readMarkdown",
+    )
     mode_was_prompted = args.mode is None
     export_mode = args.mode or select_export_mode_gui()
     if export_mode is None:
@@ -3954,7 +4031,13 @@ def main() -> int:
     source = md_path.read_text(encoding="utf-8")
     prepared, prepare_report = prepare_markdown(source)
     scripts = source_script_counts(prepared)
-    emit_progress(18, "规范化 Markdown", "标题、图片、引用间距与公式标签")
+    emit_progress(
+        18,
+        "规范化 Markdown",
+        "标题、图片、引用间距与公式标签",
+        stage_key="progress.export.normalizeMarkdown",
+        detail_key="progress.export.normalizeMarkdownDetail",
+    )
     output_value = args.output or os.environ.get("MD_EXPORT_WORD_OUTPUT")
     requested_output_path = (
         Path(output_value).expanduser().resolve()
@@ -3978,7 +4061,13 @@ def main() -> int:
         resource_path = os.pathsep.join(
             [str(vault_root), str(md_path.parent)]
         )
-        emit_progress(26, "解析文档结构", "扫描图片、表格、公式和引用")
+        emit_progress(
+            26,
+            "解析文档结构",
+            "扫描图片、表格、公式和引用",
+            stage_key="progress.export.parseDocument",
+            detail_key="progress.export.parseDocumentDetail",
+        )
         ast = pandoc_ast(
             pandoc,
             prepared_md,
@@ -4005,8 +4094,22 @@ def main() -> int:
             "检查文档资源",
             f"图片 {len(image_paths)}；表格 {inventory['table_count']}；"
             f"公式 {inventory['math_count']}",
+            stage_key="progress.export.checkResources",
+            detail_key="progress.export.checkResourcesDetail",
+            params={
+                "images": len(image_paths),
+                "tables": inventory["table_count"],
+                "equations": inventory["math_count"],
+            },
         )
-        emit_progress(42, "检查 Zotero 引用", f"citekey {len(inventory['citekeys'])}")
+        emit_progress(
+            42,
+            "检查 Zotero 引用",
+            f"citekey {len(inventory['citekeys'])}",
+            stage_key="progress.export.checkCitations",
+            detail_key="progress.export.checkCitationsDetail",
+            params={"count": len(inventory["citekeys"])},
+        )
         missing_keys, duplicate_keys = check_citekeys(
             inventory["citekeys"]
         )
@@ -4066,6 +4169,12 @@ def main() -> int:
             52,
             "预检完成",
             f"模式 {export_mode}；缺失 citekey {len(missing_keys)}",
+            stage_key="progress.export.preflight",
+            detail_key="progress.export.preflightDetail",
+            params={
+                "mode": export_mode,
+                "missing": len(missing_keys),
+            },
         )
         print_preflight(
             md_path=md_path,
@@ -4087,7 +4196,13 @@ def main() -> int:
                 return 0
 
         raw_docx = temp_dir / "pandoc-raw.docx"
-        emit_progress(60, "生成 Word 初稿", "运行 Pandoc 与 pandoc-crossref")
+        emit_progress(
+            60,
+            "生成 Word 初稿",
+            "运行 Pandoc 与 pandoc-crossref",
+            stage_key="progress.export.generateDraft",
+            detail_key="progress.export.generateDraftDetail",
+        )
         pandoc_output = run_pandoc(
             pandoc=pandoc,
             crossref=crossref,
@@ -4100,8 +4215,19 @@ def main() -> int:
             vault_root=vault_root,
             md_parent=md_path.parent,
         )
-        emit_progress(74, "Word 初稿已生成", raw_docx.name)
-        emit_progress(78, "处理 Word 格式", "字体、上下标、公式、图表和 Zotero 域")
+        emit_progress(
+            74,
+            "Word 初稿已生成",
+            raw_docx.name,
+            stage_key="progress.export.draftReady",
+        )
+        emit_progress(
+            78,
+            "处理 Word 格式",
+            "字体、上下标、公式、图表和 Zotero 域",
+            stage_key="progress.export.formatDocument",
+            detail_key="progress.export.formatDocumentDetail",
+        )
         format_report = patch_docx(
             raw_docx,
             output_path,
@@ -4117,9 +4243,20 @@ def main() -> int:
             "图片分页回填 "
             f"{reflow_report['figures_reflowed']} 处；"
             "结构、编号、引用域与格式均已检查",
+            stage_key="progress.export.validateDocument",
+            detail_key="progress.export.validateDocumentDetail",
+            params={
+                "reflowed": reflow_report["figures_reflowed"],
+            },
         )
 
-    emit_progress(96, "确认源文件", "检查导出期间 Markdown 是否发生变化")
+    emit_progress(
+        96,
+        "确认源文件",
+        "检查导出期间 Markdown 是否发生变化",
+        stage_key="progress.export.verifySource",
+        detail_key="progress.export.verifySourceDetail",
+    )
     if sha256_file(md_path) != source_hash_before:
         output_path.unlink(missing_ok=True)
         raise ExportError("源 Markdown 在导出过程中发生变化，已删除输出")
@@ -4151,12 +4288,23 @@ def main() -> int:
     print("日志：成功时不生成；仅在失败时写入导出失败.log.txt。")
     print("说明：首次打开后可在 Zotero 中执行 Refresh。")
     if not args.no_open:
-        emit_progress(99, "正在打开 Word", output_path.name)
+        emit_progress(
+            99,
+            "正在打开 Word",
+            output_path.name,
+            stage_key="progress.export.openWord",
+        )
         try:
             open_output_document(output_path)
         except Exception as exc:
             print(f"无法自动打开 Word：{exc}")
-    emit_progress(100, "导出完成", output_path.name, level="success")
+    emit_progress(
+        100,
+        "导出完成",
+        output_path.name,
+        level="success",
+        stage_key="progress.export.complete",
+    )
     return 0
 
 
@@ -4164,21 +4312,40 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except ExportError as exc:
-        emit_progress(100, "导出失败", str(exc), level="error")
+        emit_progress(
+            100,
+            "导出失败",
+            str(exc),
+            level="error",
+            stage_key="progress.export.failed",
+        )
         error_log = write_failure_log(exc)
         print(f"\n错误：{exc}", file=sys.stderr, flush=True)
         if error_log:
             print(f"错误日志：{error_log}", file=sys.stderr, flush=True)
         raise SystemExit(1)
     except KeyboardInterrupt:
-        emit_progress(100, "已取消", "用户中止导出", level="warning")
+        emit_progress(
+            100,
+            "已取消",
+            "用户中止导出",
+            level="warning",
+            stage_key="progress.export.cancelled",
+            detail_key="progress.export.cancelledDetail",
+        )
         print("\n已取消。", file=sys.stderr, flush=True)
+        raise SystemExit(130)
     except Exception as exc:
         traceback_text = traceback.format_exc()
-        emit_progress(100, "导出失败", str(exc), level="error")
+        emit_progress(
+            100,
+            "导出失败",
+            str(exc),
+            level="error",
+            stage_key="progress.export.failed",
+        )
         error_log = write_failure_log(exc, traceback_text)
         print(f"\n未预期错误：{exc}", file=sys.stderr, flush=True)
         if error_log:
             print(f"错误日志：{error_log}", file=sys.stderr, flush=True)
         raise SystemExit(1)
-        raise SystemExit(130)

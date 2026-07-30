@@ -10,6 +10,8 @@
 ## 主要能力
 
 - 从命令面板导出当前 Markdown，不要求文档位于固定文件夹。
+- 插件界面可跟随 Obsidian，也可固定为简体中文或 English；切换后运行时
+  安装窗口和导出窗口立即更新，无需重启。
 - `CO₂`、`δ¹³C`、`T₈₅` 等以 Word 的真实上下标属性写入，不是替代字符或缩小字体。
 - 支持 Pandoc、pandoc-crossref、公式编号、图表交叉引用和 Word 公式。
 - 严格模式：Zotero 缺少 citekey 时停止；兼容模式：保留醒目占位符并继续导出。
@@ -27,8 +29,9 @@
   添加 `YYYYMMDD-HHmmss` 时间戳，绝不覆盖已有 Word。
 - 导出和自动自检成功后默认自动打开生成的 Word，可在插件设置中关闭。
 - 成功时不生成冗余日志；失败时单独生成可提交排错的 `导出失败.log.txt`。
-- 运行时安装、修复与环境自检均可从 Obsidian 命令面板完成；安装时持续显示
-  当前阶段和累计用时，重复触发会复用同一个任务。
+- 运行时安装、修复与环境自检均可从 Obsidian 命令面板完成；流式下载实时
+  显示百分比、速度和预计剩余时间，支持后台继续、下载阶段取消和最多 3 次
+  网络重试，并使用 Release `SHA256SUMS` 校验运行时 ZIP。
 
 ## 最快安装方式：BRAT
 
@@ -45,12 +48,14 @@
 
 1. 在 Obsidian 的“第三方插件市场”安装并启用 **BRAT**。
 2. 打开 BRAT 设置，执行 **Add Beta plugin**。
-3. 输入本仓库地址：`你的用户名/obsidian-md-export-word`。
+3. 输入本仓库地址：`2891892831z-ship-it/obsidian-md-export-word`。
 4. 安装并启用 **MD Export Word**。
+   如需固定界面语言，可在插件设置中选择“跟随 Obsidian”“简体中文”或
+   “English”。
 5. 打开命令面板，运行
    `MD Export Word: Install or repair Word export runtime`。
-   下载包约为 34-73 MB；安装提示会持续更新阶段和累计用时，完成前无需
-   重复执行命令。
+   下载包约为 34-73 MB；下载窗口会显示百分比、速度和预计剩余时间，可
+   隐藏到后台继续。取消只在下载阶段可用，完成下载后会继续校验和安装。
 6. 安装完成后运行
    `MD Export Word: Check Word export runtime`。
 7. 打开一篇 Markdown，运行
@@ -69,6 +74,9 @@
 - `md-export-word-runtime-windows-x64.zip`；
 - `md-export-word-runtime-macos-arm64.zip`；
 - `md-export-word-runtime-macos-x64.zip`。
+
+插件同时读取当前平台的 `SHA256SUMS-<平台>.txt`，下载完成后先验证
+SHA-256，再解压和配置运行时。临时网络错误最多自动重试 3 次。
 
 随后创建插件私有 Python 虚拟环境并安装 `lxml`。Pandoc 与
 pandoc-crossref 使用项目固定且互相匹配的版本，不依赖系统 PATH。
@@ -123,7 +131,11 @@ Windows 运行时由 `scripts/build-runtime.ps1` 构建；macOS Apple Silicon
 图名和中英文图注作为一个整体处理，并自动清理 Pandoc 生成的重复图名；
 `1.4.5` 起普通导出默认保持图片原位，图片回填改为窗口顶部的显式选择和
 独立可绑定快捷键的命令；`1.4.6` 起运行时安装会防止重复触发，使用独立
-临时工作区，并提供下载超时、落盘校验和分阶段提示。
+临时工作区，并提供下载超时、落盘校验和分阶段提示；`1.5.1` 起插件界面
+支持跟随 Obsidian、简体中文和 English，运行时安装改为可后台继续、代理兼容
+的分块下载，并增加进度、速度、ETA、下载阶段取消、网络重试和 Release SHA-256
+校验；运行时文件通过 Obsidian 网络层按 4 MB 分块请求，可继承系统代理；
+Markdown `####` 会正确导出为 Word 三级节标题（Heading 4）。
 发布时由 GitHub Actions 在对应系统上分别执行真实导出烟雾测试，再生成同
 版本 Release 资产。Release 标签使用纯版本号，不带 `v`。
 

@@ -120,6 +120,29 @@ def visible_run_format(path: Path, text: str) -> tuple[str, str]:
     raise RuntimeError(f"Fixture text not found: {text}")
 
 
+def paragraph_style_name(path: Path, text: str) -> str:
+    with ZipFile(path) as archive:
+        document = ET.fromstring(archive.read("word/document.xml"))
+        styles = ET.fromstring(archive.read("word/styles.xml"))
+    names: dict[str, str] = {}
+    for style in styles.iter(W + "style"):
+        name = style.find(W + "name")
+        style_id = style.get(W + "styleId", "")
+        if name is not None and style_id:
+            names[style_id] = name.get(W + "val", "")
+    for paragraph in document.iter(W + "p"):
+        value = "".join(
+            node.text or "" for node in paragraph.iter(W + "t")
+        ).strip()
+        if value != text:
+            continue
+        properties = paragraph.find(W + "pPr")
+        style = properties.find(W + "pStyle") if properties is not None else None
+        style_id = style.get(W + "val", "") if style is not None else ""
+        return names.get(style_id, "")
+    raise RuntimeError(f"Fixture paragraph not found: {text}")
+
+
 def figure_reflow_inventory(path: Path) -> dict[str, int]:
     with ZipFile(path) as archive:
         root = ET.fromstring(archive.read("word/document.xml"))
@@ -275,6 +298,20 @@ def main() -> int:
         )
         require(code == 0 and smoke_word.is_file(), "Smoke Word missing")
         require(not success_log.exists(), "Success generated a failure log")
+        heading3 = re.sub(
+            r"\s+", "", paragraph_style_name(smoke_word, "1.1 二级节标题")
+        ).lower()
+        heading4 = re.sub(
+            r"\s+", "", paragraph_style_name(smoke_word, "1.1.1 三级节标题")
+        ).lower()
+        require(
+            heading3 in {"heading3", "标题3"},
+            f"Markdown ### did not retain Heading 3: {heading3}",
+        )
+        require(
+            heading4 in {"heading4", "标题4"},
+            f"Markdown #### did not retain Heading 4: {heading4}",
+        )
 
         code = run_export(Path(sys.executable), exporter, smoke, env)
         require(

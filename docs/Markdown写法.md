@@ -32,7 +32,8 @@
 ```markdown
 $$
 \Delta M_{H_2} = F_s - F_c - F_l
-$$ {#eq:mass-balance}
+$$
+{#eq:mass-balance}
 ```
 
 引用公式：

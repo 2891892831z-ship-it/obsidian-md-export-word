@@ -11,13 +11,22 @@ tblPrefix: Table
 天然气中的 $CO_2$、$H_2$、$\delta^{13}C(CO_2)$ 和 $^4He$ 用于验证真实
 上下标、英文字体与数字字体。
 
+### 1.1 二级节标题
+
+该段用于验证 Markdown `###` 保留为 Word 二级节标题。
+
+#### 1.1.1 三级节标题
+
+该段用于验证 Markdown `####` 保留为 Word 三级节标题，而不是降级为正文。
+
 ## 2 公式
 
 $$
 \Delta M_{H_2} = F_s - F_c - F_l
-$$ {#eq:mass-balance}
+$$
+{#eq:mass-balance}
 
-由 @eq:mass-balance 可知，公式编号应与公式同行。
+由 @eq:mass-balance 可知，导出后公式编号应正确显示；源码中的标签独占一行。
 
 ## 3 表格
 
