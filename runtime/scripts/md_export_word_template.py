@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+import unicodedata
 import urllib.parse
 import urllib.request
 from collections import Counter
@@ -714,12 +715,94 @@ def normalize_paragraph_text(
     return changed
 
 
+QUOTE_CHARS = frozenset("“”‘’")
+OPENING_QUOTE_CHARS = frozenset("“‘")
+
+
+def is_western_context_character(character: str) -> bool:
+    return (
+        character.isalnum()
+        and unicodedata.east_asian_width(character) not in {"W", "F"}
+    )
+
+
+def nearest_context_character(
+    value: str,
+    *,
+    start: int,
+    step: int,
+) -> str | None:
+    index = start + step
+    while 0 <= index < len(value):
+        character = value[index]
+        if character.isalnum():
+            return character
+        index += step
+    return None
+
+
+def quote_font_role(value: str, index: int) -> str:
+    quote = value[index]
+    directions = (1, -1) if quote in OPENING_QUOTE_CHARS else (-1, 1)
+    for step in directions:
+        context = nearest_context_character(value, start=index, step=step)
+        if context is not None:
+            return (
+                "western"
+                if is_western_context_character(context)
+                else "east_asia"
+            )
+    return "east_asia"
+
+
+def paragraph_text_context(
+    run: etree._Element,
+    text_node: etree._Element,
+) -> tuple[str, str]:
+    paragraphs = run.xpath("ancestor::w:p[1]", namespaces=NS)
+    if not paragraphs:
+        return "", ""
+    nodes = paragraphs[0].xpath(".//w:t", namespaces=NS)
+    try:
+        position = nodes.index(text_node)
+    except ValueError:
+        return "", ""
+    before = "".join((node.text or "") for node in nodes[:position])
+    after = "".join((node.text or "") for node in nodes[position + 1 :])
+    return before, after
+
+
+def expected_run_fonts(
+    run: etree._Element,
+    run_text: str,
+    *,
+    format_config: dict[str, Any],
+) -> tuple[str, str]:
+    east_asia = str(format_config["east_asia_font"])
+    western = str(format_config["western_font"])
+    if not run_text or not all(
+        character in QUOTE_CHARS for character in run_text
+    ):
+        return east_asia, western
+    text_node = run.find(W("t"))
+    if text_node is None:
+        return east_asia, east_asia
+    before, after = paragraph_text_context(run, text_node)
+    contextual_value = f"{before}{run_text}{after}"
+    offset = len(before)
+    roles = {
+        quote_font_role(contextual_value, offset + index)
+        for index in range(len(run_text))
+    }
+    font = western if roles == {"western"} else east_asia
+    return font, font
+
+
 def split_quote_runs(
     root: etree._Element,
     *,
     format_config: dict[str, Any],
 ) -> int:
-    quote_chars = set("“”‘’")
     split_count = 0
     runs = list(root.xpath(".//w:r", namespaces=NS))
     for run in runs:
@@ -729,31 +812,47 @@ def split_quote_runs(
         if len(text_nodes) != 1:
             continue
         value = text_nodes[0].text or ""
-        if not any(char in quote_chars for char in value):
+        if not any(char in QUOTE_CHARS for char in value):
             continue
-        groups: list[tuple[str, bool]] = []
+        before, after = paragraph_text_context(run, text_nodes[0])
+        contextual_value = f"{before}{value}{after}"
+        offset = len(before)
+        roles = [
+            (
+                quote_font_role(contextual_value, offset + index)
+                if character in QUOTE_CHARS
+                else None
+            )
+            for index, character in enumerate(value)
+        ]
+        groups: list[tuple[str, str | None]] = []
         start = 0
-        current_quote = value[0] in quote_chars
+        current_role = roles[0]
         for index in range(1, len(value) + 1):
             boundary = index == len(value)
-            next_quote = value[index] in quote_chars if not boundary else None
-            if boundary or next_quote != current_quote:
-                groups.append((value[start:index], current_quote))
+            next_role = roles[index] if not boundary else None
+            if boundary or next_role != current_role:
+                groups.append((value[start:index], current_role))
                 start = index
-                current_quote = bool(next_quote)
+                current_role = next_role
         if len(groups) == 1:
             rpr = get_or_add(run, W("rPr"))
+            font = (
+                str(format_config["western_font"])
+                if groups[0][1] == "western"
+                else str(format_config["east_asia_font"])
+            )
             set_fonts(
                 rpr,
-                east_asia=str(format_config["east_asia_font"]),
-                western=str(format_config["east_asia_font"]),
+                east_asia=font,
+                western=font,
             )
             continue
 
         parent = run.getparent()
         position = parent.index(run)
         replacements: list[etree._Element] = []
-        for segment, is_quote in groups:
+        for segment, role in groups:
             clone = copy.deepcopy(run)
             clone_text = clone.find(W("t"))
             clone_text.text = segment
@@ -761,15 +860,20 @@ def split_quote_runs(
                 clone_text.set(f"{{{XML_NS}}}space", "preserve")
             else:
                 clone_text.attrib.pop(f"{{{XML_NS}}}space", None)
-            if is_quote:
+            if role is not None:
                 rpr = get_or_add(clone, W("rPr"))
                 if clone.index(rpr) != 0:
                     clone.remove(rpr)
                     clone.insert(0, rpr)
+                font = (
+                    str(format_config["western_font"])
+                    if role == "western"
+                    else str(format_config["east_asia_font"])
+                )
                 set_fonts(
                     rpr,
-                    east_asia=str(format_config["east_asia_font"]),
-                    western=str(format_config["east_asia_font"]),
+                    east_asia=font,
+                    western=font,
                 )
             replacements.append(clone)
         parent.remove(run)
@@ -3417,11 +3521,13 @@ def validate_docx(
                 run_text = "".join(
                     run.xpath(".//w:t/text()", namespaces=NS)
                 )
-                expected_western_font = (
-                    str(format_config["east_asia_font"])
-                    if run_text
-                    and all(character in "“”‘’" for character in run_text)
-                    else str(format_config["western_font"])
+                (
+                    expected_east_asia_font,
+                    expected_western_font,
+                ) = expected_run_fonts(
+                    run,
+                    run_text,
+                    format_config=format_config,
                 )
                 if size != expected_half_points:
                     errors.append(
@@ -3431,7 +3537,7 @@ def validate_docx(
                     break
                 if fonts is None or (
                     fonts.get(W("eastAsia"))
-                    != str(format_config["east_asia_font"])
+                    != expected_east_asia_font
                     or fonts.get(W("ascii"))
                     != expected_western_font
                     or fonts.get(W("hAnsi"))
@@ -3605,13 +3711,13 @@ def validate_docx(
                     run_text = "".join(
                         run.xpath(".//w:t/text()", namespaces=NS)
                     )
-                    expected_western_font = (
-                        str(format_config["east_asia_font"])
-                        if run_text
-                        and all(
-                            character in "“”‘’" for character in run_text
-                        )
-                        else str(format_config["western_font"])
+                    (
+                        expected_east_asia_font,
+                        expected_western_font,
+                    ) = expected_run_fonts(
+                        run,
+                        run_text,
+                        format_config=format_config,
                     )
                     if size != table_half_points:
                         errors.append(
@@ -3621,7 +3727,7 @@ def validate_docx(
                         break
                     if fonts is None or (
                         fonts.get(W("eastAsia"))
-                        != str(format_config["east_asia_font"])
+                        != expected_east_asia_font
                         or fonts.get(W("ascii"))
                         != expected_western_font
                         or fonts.get(W("hAnsi"))

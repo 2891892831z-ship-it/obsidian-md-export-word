@@ -25,6 +25,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Use Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: runtime/requirements.txt
+
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check -r runtime/requirements.txt
+
+      - name: Test language-aware quote fonts
+        run: python scripts/test-quote-fonts.py
+
       - name: Check source
         run: npm run check
 

@@ -1,7 +1,7 @@
 {
   "id": "md-export-word",
   "name": "MD Export Word",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "minAppVersion": "1.7.2",
   "description": "Export Obsidian Markdown to formatted Word with true scripts, cross-references and refreshable Zotero fields.",
   "author": "早点睡觉",
