@@ -2013,7 +2013,7 @@ var obsidianBufferedRequest = async ({
 };
 
 // src/main.ts
-var PLUGIN_VERSION = "1.5.2";
+var PLUGIN_VERSION = "1.5.3";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -3772,7 +3772,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       return saved;
     }
     const stamped = String(
-      true ? "" : ""
+      true ? "2891892831z-ship-it/obsidian-md-export-word" : ""
     ).trim();
     return stamped;
   }

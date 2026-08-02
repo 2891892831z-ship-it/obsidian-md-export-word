@@ -42,6 +42,12 @@ M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+CUSTOM_PROP_NS = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/"
+    "custom-properties"
+)
+VT_NS = "http://schemas.openxmlformats.org/officeDocument/2006/"
+VT_NS += "docPropsVTypes"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 
 NS = {
@@ -51,7 +57,34 @@ NS = {
     "wp": WP_NS,
     "a": A_NS,
     "pr": PKG_REL_NS,
+    "cp": CUSTOM_PROP_NS,
+    "vt": VT_NS,
 }
+
+CUSTOM_PROPERTY_FMTID = "{D5CDD505-2E9C-101B-9397-08002B2CF9AE}"
+ZOTERO_PREF_CHUNK_SIZE = 240
+CUSTOM_MARK_STYLE_PREFIX = "MDExportWordMark"
+CSS_NAMED_COLORS = {
+    "black": "000000",
+    "silver": "C0C0C0",
+    "gray": "808080",
+    "white": "FFFFFF",
+    "maroon": "800000",
+    "red": "FF0000",
+    "purple": "800080",
+    "fuchsia": "FF00FF",
+    "green": "008000",
+    "lime": "00FF00",
+    "olive": "808000",
+    "yellow": "FFFF00",
+    "navy": "000080",
+    "blue": "0000FF",
+    "teal": "008080",
+    "aqua": "00FFFF",
+}
+MARKDOWN_INPUT_FORMAT = (
+    "markdown+raw_html+tex_math_dollars+mark+bracketed_spans"
+)
 
 
 def W(name: str) -> str:
@@ -64,6 +97,14 @@ def R(name: str) -> str:
 
 def M(name: str) -> str:
     return f"{{{M_NS}}}{name}"
+
+
+def CP(name: str) -> str:
+    return f"{{{CUSTOM_PROP_NS}}}{name}"
+
+
+def VT(name: str) -> str:
+    return f"{{{VT_NS}}}{name}"
 
 
 class ExportError(RuntimeError):
@@ -374,6 +415,373 @@ def set_fonts(
     rfonts.set(W("eastAsia"), east_asia)
 
 
+def normalize_document_language(value: str | None) -> str:
+    raw = str(value or "").strip().replace("_", "-")
+    if not raw:
+        return ""
+    parts = [part for part in raw.split("-") if part]
+    if not parts or not re.fullmatch(r"[A-Za-z]{2,3}", parts[0]):
+        return raw
+    normalized = [parts[0].lower()]
+    for part in parts[1:]:
+        if len(part) == 2 and part.isalpha():
+            normalized.append(part.upper())
+        elif len(part) == 4 and part.isalpha():
+            normalized.append(part.title())
+        else:
+            normalized.append(part)
+    language = "-".join(normalized)
+    if language == "en":
+        return "en-US"
+    if language == "zh":
+        return "zh-CN"
+    return language
+
+
+def is_english_document_language(value: str | None) -> bool:
+    language = normalize_document_language(value)
+    return bool(re.match(r"^en(?:-|$)", language, flags=re.IGNORECASE))
+
+
+def language_aware_format_config(
+    format_config: dict[str, Any],
+    document_language: str | None,
+) -> dict[str, Any]:
+    """Use one font in every Word font slot for English documents.
+
+    Word may classify otherwise-ASCII punctuation in refreshed Zotero fields
+    through the East Asian font slot.  English documents therefore need the
+    configured Western font in all four slots.  Chinese and unspecified
+    documents retain the configured East Asian/Western font pairing.
+    """
+    effective = copy.deepcopy(format_config)
+    language = normalize_document_language(document_language)
+    effective["document_language"] = language
+    if is_english_document_language(language):
+        effective["east_asia_font"] = str(effective["western_font"])
+    return effective
+
+
+INHERITED_FONT_STYLE_NAMES = frozenset(
+    {
+        "Normal",
+        "Default Paragraph Font",
+        "Body Text",
+        "First Paragraph",
+        "Bibliography",
+    }
+)
+
+
+def set_inherited_run_language(
+    rpr: etree._Element,
+    document_language: str | None,
+) -> None:
+    language = normalize_document_language(document_language)
+    if not language:
+        return
+    lang = get_or_add(rpr, W("lang"))
+    if is_english_document_language(language):
+        lang.set(W("val"), language)
+        lang.set(W("eastAsia"), language)
+    elif re.match(r"^zh(?:-|$)", language, flags=re.IGNORECASE):
+        lang.set(W("eastAsia"), language)
+
+
+def patch_inherited_font_defaults(
+    styles_root: etree._Element,
+    *,
+    document_language: str | None,
+    format_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Patch font inheritance used by Word and refreshed Zotero fields."""
+    doc_defaults = direct(styles_root, W("docDefaults"))
+    if doc_defaults is None:
+        doc_defaults = etree.Element(W("docDefaults"))
+        styles_root.insert(0, doc_defaults)
+    rpr_default = direct(doc_defaults, W("rPrDefault"))
+    if rpr_default is None:
+        rpr_default = etree.Element(W("rPrDefault"))
+        doc_defaults.insert(0, rpr_default)
+    rpr = get_or_add(rpr_default, W("rPr"))
+    east_asia = str(format_config["east_asia_font"])
+    western = str(format_config["western_font"])
+    set_fonts(rpr, east_asia=east_asia, western=western)
+    set_inherited_run_language(rpr, document_language)
+
+    patched_styles = 0
+    for style in styles_root.findall(W("style")):
+        name_node = direct(style, W("name"))
+        style_name = name_node.get(W("val"), "") if name_node is not None else ""
+        if style_name not in INHERITED_FONT_STYLE_NAMES:
+            continue
+        style_rpr = get_or_add(style, W("rPr"))
+        set_fonts(style_rpr, east_asia=east_asia, western=western)
+        set_inherited_run_language(style_rpr, document_language)
+        patched_styles += 1
+
+    return {
+        "document_language": normalize_document_language(document_language),
+        "english_all_western_slots": is_english_document_language(
+            document_language
+        ),
+        "east_asia_font": east_asia,
+        "western_font": western,
+        "styles_patched": patched_styles,
+    }
+
+
+def normalize_zotero_style_id(value: str | None) -> str:
+    style = str(value or "").strip()
+    prefix = "http://www.zotero.org/styles/"
+    if style.startswith(prefix):
+        style = style[len(prefix):]
+    if style.lower().endswith(".csl"):
+        style = Path(style).stem
+    if style == "apa7":
+        style = "apa"
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", style):
+        return "apa"
+    return style or "apa"
+
+
+def zotero_preference_properties(
+    custom_root: etree._Element,
+) -> list[etree._Element]:
+    properties = [
+        prop
+        for prop in custom_root.findall(CP("property"))
+        if re.fullmatch(r"ZOTERO_PREF_\d+", prop.get("name", ""))
+    ]
+    return sorted(
+        properties,
+        key=lambda prop: int(prop.get("name", "").rsplit("_", 1)[1]),
+    )
+
+
+def zotero_preference_text(custom_root: etree._Element) -> str:
+    chunks: list[str] = []
+    for prop in zotero_preference_properties(custom_root):
+        value = prop.find(VT("lpwstr"))
+        chunks.append(value.text or "" if value is not None else "")
+    return "".join(chunks)
+
+
+def english_zotero_preferences(style_id: str) -> str:
+    root = etree.Element("data")
+    root.set("data-version", "3")
+    root.set("zotero-version", "5.0.89")
+    etree.SubElement(root, "session").set("id", "MDExportWord")
+    style = etree.SubElement(root, "style")
+    style.set("id", f"http://www.zotero.org/styles/{style_id}")
+    style.set("locale", "en-US")
+    style.set("hasBibliography", "1")
+    style.set("bibliographyStyleHasBeenSet", "0")
+    prefs = etree.SubElement(root, "prefs")
+    field_type = etree.SubElement(prefs, "pref")
+    field_type.set("name", "fieldType")
+    field_type.set("value", "Field")
+    return etree.tostring(root, encoding="unicode")
+
+
+def patch_zotero_document_preferences(
+    custom_root: etree._Element | None,
+    *,
+    document_language: str | None,
+    style_id: str | None,
+) -> dict[str, Any]:
+    """Keep Zotero Refresh on an English CSL style for English exports."""
+    if not is_english_document_language(document_language):
+        return {"patched": False, "reason": "non-English document"}
+    target_style = normalize_zotero_style_id(style_id)
+    if custom_root is None:
+        return {
+            "patched": False,
+            "reason": "docProps/custom.xml is missing",
+            "style_id": target_style,
+        }
+
+    original = zotero_preference_text(custom_root)
+    if original:
+        try:
+            preferences = etree.fromstring(original.encode("utf-8"))
+        except etree.XMLSyntaxError:
+            preferences = etree.fromstring(
+                english_zotero_preferences(target_style).encode("utf-8")
+            )
+    else:
+        preferences = etree.fromstring(
+            english_zotero_preferences(target_style).encode("utf-8")
+        )
+
+    style = preferences.find("style")
+    if style is None:
+        style = etree.SubElement(preferences, "style")
+    style.set("id", f"http://www.zotero.org/styles/{target_style}")
+    style.set("locale", "en-US")
+    style.set("hasBibliography", "1")
+    style.set("bibliographyStyleHasBeenSet", "0")
+    prefs = preferences.find("prefs")
+    if prefs is None:
+        prefs = etree.SubElement(preferences, "prefs")
+    field_type = next(
+        (
+            node
+            for node in prefs.findall("pref")
+            if node.get("name") == "fieldType"
+        ),
+        None,
+    )
+    if field_type is None:
+        field_type = etree.SubElement(prefs, "pref")
+        field_type.set("name", "fieldType")
+    field_type.set("value", "Field")
+
+    updated = etree.tostring(preferences, encoding="unicode")
+    chunks = [
+        updated[index:index + ZOTERO_PREF_CHUNK_SIZE]
+        for index in range(0, len(updated), ZOTERO_PREF_CHUNK_SIZE)
+    ]
+    properties = zotero_preference_properties(custom_root)
+    next_pid = max(
+        (
+            int(prop.get("pid", "1"))
+            for prop in custom_root.findall(CP("property"))
+            if prop.get("pid", "").isdigit()
+        ),
+        default=1,
+    ) + 1
+    for index, chunk in enumerate(chunks, start=1):
+        if index <= len(properties):
+            prop = properties[index - 1]
+            for child in list(prop):
+                prop.remove(child)
+        else:
+            prop = etree.SubElement(custom_root, CP("property"))
+            prop.set("fmtid", CUSTOM_PROPERTY_FMTID)
+            prop.set("pid", str(next_pid))
+            next_pid += 1
+        prop.set("name", f"ZOTERO_PREF_{index}")
+        etree.SubElement(prop, VT("lpwstr")).text = chunk
+    for extra in properties[len(chunks):]:
+        custom_root.remove(extra)
+    return {
+        "patched": original != updated,
+        "style_id": target_style,
+        "chunks": len(chunks),
+    }
+
+
+ZOTERO_FORMATTED_CITATION_RE = re.compile(
+    r'(\"formattedCitation\"\s*:\s*\")((?:\\.|[^\"\\])*)(\")'
+)
+
+
+def normalize_english_citation_parentheses(value: str) -> tuple[str, int]:
+    updated = value
+    count = 0
+    for old, new in (
+        (r"\\uc0\\u65288{}", "("),
+        (r"\\uc0\\u65289{}", ")"),
+        (r"\uc0\u65288{}", "("),
+        (r"\uc0\u65289{}", ")"),
+        (r"\\u65288{}", "("),
+        (r"\\u65289{}", ")"),
+        (r"\u65288{}", "("),
+        (r"\u65289{}", ")"),
+        ("（", "("),
+        ("）", ")"),
+    ):
+        occurrences = updated.count(old)
+        if occurrences:
+            updated = updated.replace(old, new)
+            count += occurrences
+    return updated, count
+
+
+def normalize_zotero_formatted_citation(code: str) -> tuple[str, int]:
+    replacements = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal replacements
+        normalized, count = normalize_english_citation_parentheses(
+            match.group(2)
+        )
+        replacements += count
+        return match.group(1) + normalized + match.group(3)
+
+    return ZOTERO_FORMATTED_CITATION_RE.sub(replace, code), replacements
+
+
+def set_xml_text(node: etree._Element, value: str) -> None:
+    node.text = value
+    if value[:1].isspace() or value[-1:].isspace():
+        node.set(f"{{{XML_NS}}}space", "preserve")
+    else:
+        node.attrib.pop(f"{{{XML_NS}}}space", None)
+
+
+def redistribute_field_code(
+    code_nodes: list[etree._Element],
+    code: str,
+) -> None:
+    remaining = code
+    original_lengths = [len(node.text or "") for node in code_nodes]
+    for index, node in enumerate(code_nodes):
+        if index == len(code_nodes) - 1:
+            chunk = remaining
+        else:
+            chunk = remaining[:original_lengths[index]]
+            remaining = remaining[len(chunk):]
+        set_xml_text(node, chunk)
+
+
+def patch_english_zotero_citation_parentheses(
+    document: etree._Element,
+    *,
+    document_language: str | None,
+    western_font: str,
+) -> dict[str, int]:
+    if not is_english_document_language(document_language):
+        return {"fields": 0, "field_code": 0, "display": 0}
+    fields_patched = 0
+    code_replacements = 0
+    display_replacements = 0
+    for field in field_inventory(document):
+        if "ZOTERO_ITEM" not in field["code"].upper():
+            continue
+        updated_code, replacements = normalize_zotero_formatted_citation(
+            field["code"]
+        )
+        if replacements:
+            redistribute_field_code(field["code_nodes"], updated_code)
+            code_replacements += replacements
+            fields_patched += 1
+        for text_node in field["result_nodes"]:
+            value = text_node.text or ""
+            normalized = value.replace("（", "(").replace("）", ")")
+            if normalized != value:
+                display_replacements += (
+                    value.count("（") + value.count("）")
+                )
+                set_xml_text(text_node, normalized)
+            if "(" not in normalized and ")" not in normalized:
+                continue
+            runs = text_node.xpath("ancestor::w:r[1]", namespaces=NS)
+            if not runs:
+                continue
+            rpr = get_or_add(runs[0], W("rPr"))
+            set_fonts(rpr, east_asia=western_font, western=western_font)
+            fonts = direct(rpr, W("rFonts"))
+            if fonts is not None:
+                fonts.attrib.pop(W("hint"), None)
+    return {
+        "fields": fields_patched,
+        "field_code": code_replacements,
+        "display": display_replacements,
+    }
+
+
 def set_size(rpr: etree._Element, points: float) -> None:
     value = str(int(round(points * 2)))
     get_or_add(rpr, W("sz")).set(W("val"), value)
@@ -498,6 +906,7 @@ def field_inventory(root: etree._Element) -> list[dict[str, Any]]:
                 stack.append(
                     {
                         "code": [],
+                        "code_nodes": [],
                         "result_nodes": [],
                         "separated": False,
                     }
@@ -510,6 +919,7 @@ def field_inventory(root: etree._Element) -> list[dict[str, Any]]:
                 fields.append(field)
         elif element.tag == W("instrText") and stack:
             stack[-1]["code"].append(element.text or "")
+            stack[-1]["code_nodes"].append(element)
         elif element.tag == W("t") and stack and stack[-1]["separated"]:
             stack[-1]["result_nodes"].append(element)
     return fields
@@ -889,16 +1299,38 @@ def inject_metadata(text: str) -> str:
         for index in range(1, len(lines)):
             if lines[index].strip() == "---":
                 additions: list[str] = []
+                frontmatter = lines[1:index]
                 if not any(
                     re.match(r"^\s*linkReferences\s*:", line)
-                    for line in lines[1:index]
+                    for line in frontmatter
                 ):
                     additions.append("linkReferences: true")
                 if not any(
                     re.match(r"^\s*zotero[-_]client\s*:", line)
-                    for line in lines[1:index]
+                    for line in frontmatter
                 ):
                     additions.append("zotero-client: zotero")
+                is_english = any(
+                    re.match(
+                        r"^\s*lang\s*:\s*[\"']?en(?:[-_][A-Za-z0-9]+)?",
+                        line,
+                        flags=re.IGNORECASE,
+                    )
+                    for line in frontmatter
+                )
+                if is_english and not any(
+                    re.match(
+                        r"^\s*zotero[-_]csl[-_]style\s*:",
+                        line,
+                        flags=re.IGNORECASE,
+                    )
+                    for line in frontmatter
+                ):
+                    # The Word reference template may carry Chinese Zotero
+                    # document preferences.  Give the Zotero filter an
+                    # explicit English style so a later Refresh cannot restore
+                    # full-width citation parentheses.
+                    additions.append("zotero-csl-style: apa")
                 lines[index:index] = additions
                 return "\n".join(lines) + "\n"
     return (
@@ -1044,6 +1476,112 @@ def normalize_markdown_citation_spacing(text: str) -> tuple[str, int]:
     return "\n".join(output) + ("\n" if text.endswith("\n") else ""), changes
 
 
+def normalize_css_color(value: str) -> str | None:
+    """Return a six-digit RGB value for a supported CSS color."""
+    candidate = value.strip().lower()
+    hex_match = re.fullmatch(r"#([0-9a-f]{3}|[0-9a-f]{6})", candidate)
+    if hex_match:
+        digits = hex_match.group(1)
+        if len(digits) == 3:
+            digits = "".join(character * 2 for character in digits)
+        return digits.upper()
+    rgb_match = re.fullmatch(
+        r"rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)",
+        candidate,
+    )
+    if rgb_match:
+        channels = [int(channel) for channel in rgb_match.groups()]
+        if all(0 <= channel <= 255 for channel in channels):
+            return "".join(f"{channel:02X}" for channel in channels)
+    return CSS_NAMED_COLORS.get(candidate)
+
+
+def css_mark_background_color(attributes: str) -> str | None:
+    """Extract an exact, Word-compatible background color from mark attrs."""
+    style_match = re.search(
+        r"\bstyle\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))",
+        attributes,
+        flags=re.IGNORECASE,
+    )
+    if not style_match:
+        return None
+    style = next(
+        (group for group in style_match.groups() if group is not None),
+        "",
+    )
+    colors: list[str] = []
+    for declaration in style.split(";"):
+        if ":" not in declaration:
+            continue
+        property_name, property_value = declaration.split(":", 1)
+        if property_name.strip().lower() not in {
+            "background",
+            "background-color",
+        }:
+            continue
+        value = property_value.strip()
+        color = normalize_css_color(value)
+        if color is None and value:
+            color = normalize_css_color(value.split()[0])
+        if color is not None:
+            colors.append(color)
+    return colors[-1] if colors else None
+
+
+def custom_mark_style_id(color: str) -> str:
+    return CUSTOM_MARK_STYLE_PREFIX + color.upper()
+
+
+def custom_mark_color_from_style_id(style_id: str) -> str | None:
+    match = re.fullmatch(
+        re.escape(CUSTOM_MARK_STYLE_PREFIX) + r"([0-9A-Fa-f]{6})",
+        style_id,
+    )
+    return match.group(1).upper() if match else None
+
+
+def normalize_html_mark_highlights(text: str) -> tuple[str, int]:
+    """Convert HTML marks to Word-safe Pandoc highlight representations.
+
+    Uncolored ``<mark>`` spans become native ``==mark==`` spans and therefore
+    use Word's standard yellow highlighter.  A supported CSS background color
+    becomes a Pandoc custom-style span whose exact RGB fill is materialized in
+    the final DOCX. Fenced code blocks are intentionally excluded.
+    """
+    lines = text.splitlines()
+    in_fence = False
+    changes = 0
+    output: list[str] = []
+    fence_pattern = re.compile(r"^\s*(```+|~~~+)")
+    mark_pattern = re.compile(
+        r"<mark\b(?P<attributes>[^>]*)>(?P<content>.*?)</mark>",
+        flags=re.IGNORECASE,
+    )
+
+    def replace_mark(match: re.Match[str]) -> str:
+        content = match.group("content")
+        color = css_mark_background_color(match.group("attributes"))
+        if color is None:
+            return f"=={content}=="
+        return (
+            f"[{content}]"
+            f'{{custom-style="{custom_mark_style_id(color)}"}}'
+        )
+
+    for line in lines:
+        if fence_pattern.match(line):
+            in_fence = not in_fence
+            output.append(line)
+            continue
+        if in_fence:
+            output.append(line)
+            continue
+        line, line_changes = mark_pattern.subn(replace_mark, line)
+        changes += line_changes
+        output.append(line)
+    return "\n".join(output) + ("\n" if text.endswith("\n") else ""), changes
+
+
 def strip_static_bibliography(text: str) -> tuple[str, bool]:
     lines = text.splitlines()
     in_frontmatter = bool(lines and lines[0].strip() == "---")
@@ -1159,6 +1697,7 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
     note_paragraphs = count_markdown_note_paragraphs(prepared)
     prepared = inject_metadata(prepared)
     prepared = convert_obsidian_image_embeds(prepared)
+    prepared, html_mark_changes = normalize_html_mark_highlights(prepared)
     prepared, citation_space_changes = normalize_markdown_citation_spacing(
         prepared
     )
@@ -1168,6 +1707,7 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
         "static_references_removed": removed_static_refs,
         "equation_numbers": equation_numbers,
         "citation_space_changes": citation_space_changes,
+        "html_mark_changes": html_mark_changes,
         "document_title": document_title,
         "frontmatter_title_suppressed": frontmatter_title_suppressed,
         "note_paragraphs": note_paragraphs,
@@ -1184,6 +1724,29 @@ def walk_ast(node: Any) -> Iterable[dict[str, Any]]:
             yield from walk_ast(value)
 
 
+def highlighted_plain_text_length(node: Any) -> int:
+    """Count text that the DOCX writer can carry inside w:highlight.
+
+    Zotero citations become raw Word fields and equations become OMML, so they
+    do not inherit a surrounding Pandoc mark span.  Excluding those structured
+    nodes keeps the validation focused on ordinary visible prose.
+    """
+    if isinstance(node, list):
+        return sum(highlighted_plain_text_length(value) for value in node)
+    if not isinstance(node, dict):
+        return 0
+    kind = node.get("t")
+    if kind in {"Cite", "Math", "RawInline", "Code"}:
+        return 0
+    if kind == "Str":
+        return len(str(node.get("c", "")))
+    if kind in {"Space", "SoftBreak", "LineBreak"}:
+        return 1
+    return sum(
+        highlighted_plain_text_length(value) for value in node.values()
+    )
+
+
 def pandoc_ast(
     pandoc: Path,
     markdown: Path,
@@ -1195,7 +1758,7 @@ def pandoc_ast(
         str(pandoc),
         str(markdown),
         "--from",
-        "markdown+raw_html+tex_math_dollars",
+        MARKDOWN_INPUT_FORMAT,
         "--to",
         "json",
         "--resource-path",
@@ -1224,6 +1787,8 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
     math_count = 0
     display_math_count = 0
     table_count = 0
+    highlight_chars = 0
+    custom_highlight_chars: Counter[str] = Counter()
     headers: list[str] = []
 
     for node in walk_ast(ast):
@@ -1256,6 +1821,18 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
                 display_math_count += 1
         elif kind == "Table":
             table_count += 1
+        elif kind == "Span":
+            attributes = content[0]
+            if "mark" in attributes[1]:
+                highlight_chars += highlighted_plain_text_length(content[1])
+            key_values = dict(attributes[2])
+            custom_color = custom_mark_color_from_style_id(
+                key_values.get("custom-style", "")
+            )
+            if custom_color is not None:
+                custom_highlight_chars[custom_color] += (
+                    highlighted_plain_text_length(content[1])
+                )
         elif kind == "Header":
             level = content[0]
             text = stringify_inlines(content[2])
@@ -1268,7 +1845,16 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
         "math_count": math_count,
         "display_math_count": display_math_count,
         "table_count": table_count,
+        "highlight_chars": highlight_chars,
+        "custom_highlight_chars": dict(sorted(custom_highlight_chars.items())),
         "headers": headers,
+        "document_language": stringify_metadata(
+            ast.get("meta", {}).get("lang")
+        ),
+        "zotero_csl_style": stringify_metadata(
+            ast.get("meta", {}).get("zotero-csl-style")
+            or ast.get("meta", {}).get("zotero_csl_style")
+        ),
         "caption_titles": {
             "figure": stringify_metadata(
                 ast.get("meta", {}).get("figureTitle")
@@ -2399,6 +2985,65 @@ def style_missing_citation_placeholders(
     return {citekey: counts[citekey] for citekey in missing_citekeys}
 
 
+def set_exact_run_shading(rpr: etree._Element, color: str) -> None:
+    """Apply an exact RGB background fill without Word highlight override."""
+    remove_direct(rpr, W("highlight"))
+    remove_direct(rpr, W("shd"))
+    shading = etree.SubElement(rpr, W("shd"))
+    shading.set(W("val"), "clear")
+    shading.set(W("color"), "auto")
+    shading.set(W("fill"), color.upper())
+
+
+def run_visible_text_length(run: etree._Element) -> int:
+    count = len("".join(run.xpath(".//w:t/text()", namespaces=NS)))
+    count += len(run.xpath(".//w:tab | .//w:br", namespaces=NS))
+    return count
+
+
+def patch_custom_mark_highlights(
+    styles_root: etree._Element,
+    document_root: etree._Element,
+) -> dict[str, Any]:
+    """Materialize custom Markdown mark colors as exact Word run shading."""
+    style_colors: dict[str, str] = {}
+    for style in styles_root.findall(W("style")):
+        style_id = style.get(W("styleId"), "")
+        color = custom_mark_color_from_style_id(style_id)
+        if color is None:
+            name = direct(style, W("name"))
+            color = custom_mark_color_from_style_id(
+                name.get(W("val"), "") if name is not None else ""
+            )
+        if color is None:
+            continue
+        style_colors[style_id] = color
+        set_exact_run_shading(get_or_add(style, W("rPr")), color)
+
+    character_counts: Counter[str] = Counter()
+    run_counts: Counter[str] = Counter()
+    for run in document_root.xpath(".//w:r[w:rPr/w:rStyle]", namespaces=NS):
+        rpr = direct(run, W("rPr"))
+        if rpr is None:
+            continue
+        style_node = direct(rpr, W("rStyle"))
+        style_id = style_node.get(W("val"), "") if style_node is not None else ""
+        color = style_colors.get(style_id)
+        if color is None:
+            color = custom_mark_color_from_style_id(style_id)
+        if color is None:
+            continue
+        set_exact_run_shading(rpr, color)
+        run_counts[color] += 1
+        character_counts[color] += run_visible_text_length(run)
+
+    return {
+        "styles": dict(sorted(style_colors.items())),
+        "runs": dict(sorted(run_counts.items())),
+        "characters": dict(sorted(character_counts.items())),
+    }
+
+
 def style_hyperlinks(
     document_root: etree._Element,
     rels_root: etree._Element | None,
@@ -3060,6 +3705,11 @@ def patch_docx(
         document = etree.fromstring(source.read("word/document.xml"), parser)
         styles_root = etree.fromstring(source.read("word/styles.xml"), parser)
         settings = etree.fromstring(source.read("word/settings.xml"), parser)
+        custom_properties = None
+        if "docProps/custom.xml" in source.namelist():
+            custom_properties = etree.fromstring(
+                source.read("docProps/custom.xml"), parser
+            )
         raw_script_baseline = script_run_counts(document)
         rels = None
         if "word/_rels/document.xml.rels" in source.namelist():
@@ -3067,11 +3717,30 @@ def patch_docx(
                 source.read("word/_rels/document.xml.rels"), parser
             )
 
+        inherited_font_report = patch_inherited_font_defaults(
+            styles_root,
+            document_language=source_inventory.get("document_language", ""),
+            format_config=format_config,
+        )
         styles = style_id_map(styles_root)
         body_report = format_body_paragraphs(
             document,
             styles=styles,
             format_config=format_config,
+        )
+        zotero_parenthesis_report = (
+            patch_english_zotero_citation_parentheses(
+                document,
+                document_language=source_inventory.get(
+                    "document_language", ""
+                ),
+                western_font=str(format_config["western_font"]),
+            )
+        )
+        zotero_preferences_report = patch_zotero_document_preferences(
+            custom_properties,
+            document_language=source_inventory.get("document_language", ""),
+            style_id=source_inventory.get("zotero_csl_style", "apa"),
         )
         duplicate_image_captions_removed = (
             remove_redundant_generated_image_captions(
@@ -3149,11 +3818,21 @@ def patch_docx(
             document,
             source_inventory.get("missing_citekeys", []),
         )
+        custom_highlight_report = patch_custom_mark_highlights(
+            styles_root,
+            document,
+        )
         patch_section(document, format_config=format_config)
         patch_settings(settings)
 
         replacements["word/document.xml"] = etree.tostring(
             document,
+            xml_declaration=True,
+            encoding="UTF-8",
+            standalone=True,
+        )
+        replacements["word/styles.xml"] = etree.tostring(
+            styles_root,
             xml_declaration=True,
             encoding="UTF-8",
             standalone=True,
@@ -3164,6 +3843,13 @@ def patch_docx(
             encoding="UTF-8",
             standalone=True,
         )
+        if custom_properties is not None:
+            replacements["docProps/custom.xml"] = etree.tostring(
+                custom_properties,
+                xml_declaration=True,
+                encoding="UTF-8",
+                standalone=True,
+            )
 
         output_docx.parent.mkdir(parents=True, exist_ok=True)
         handle = tempfile.NamedTemporaryFile(
@@ -3211,6 +3897,10 @@ def patch_docx(
         "hyperlinks": hyperlink_counts,
         "missing_citation_placeholders": missing_placeholders,
         "bibliography_inserted": inserted_bibliography,
+        "inherited_fonts": inherited_font_report,
+        "zotero_parentheses": zotero_parenthesis_report,
+        "zotero_preferences": zotero_preferences_report,
+        "custom_highlights": custom_highlight_report,
         "format_config": format_config,
         "validation": validation,
     }
@@ -3275,6 +3965,175 @@ def validate_table_borders(table: etree._Element) -> list[str]:
     return issues
 
 
+def inherited_font_issues(
+    styles_root: etree._Element,
+    *,
+    document_language: str | None,
+    format_config: dict[str, Any],
+) -> list[str]:
+    issues: list[str] = []
+    expected = {
+        "ascii": str(format_config["western_font"]),
+        "hAnsi": str(format_config["western_font"]),
+        "cs": str(format_config["western_font"]),
+        "eastAsia": str(format_config["east_asia_font"]),
+    }
+
+    def check_rpr(label: str, rpr: etree._Element | None) -> None:
+        fonts = direct(rpr, W("rFonts")) if rpr is not None else None
+        if fonts is None:
+            issues.append(f"{label} is missing inherited rFonts")
+            return
+        actual = {slot: fonts.get(W(slot)) for slot in expected}
+        if actual != expected:
+            issues.append(
+                f"{label} inherited fonts are {actual}, expected {expected}"
+            )
+        if is_english_document_language(document_language):
+            language = normalize_document_language(document_language)
+            lang = direct(rpr, W("lang"))
+            if lang is None or (
+                lang.get(W("val")) != language
+                or lang.get(W("eastAsia")) != language
+            ):
+                issues.append(
+                    f"{label} language inheritance is not {language}"
+                )
+
+    default_rpr = styles_root.find(
+        "w:docDefaults/w:rPrDefault/w:rPr",
+        namespaces=NS,
+    )
+    check_rpr("docDefaults", default_rpr)
+
+    found_styles: set[str] = set()
+    for style in styles_root.findall(W("style")):
+        name_node = direct(style, W("name"))
+        style_name = name_node.get(W("val"), "") if name_node is not None else ""
+        if style_name not in INHERITED_FONT_STYLE_NAMES:
+            continue
+        found_styles.add(style_name)
+        check_rpr(f"style {style_name}", direct(style, W("rPr")))
+    missing_styles = INHERITED_FONT_STYLE_NAMES - found_styles
+    if missing_styles:
+        issues.append(
+            "Missing inherited-font styles: " + ", ".join(sorted(missing_styles))
+        )
+    return issues
+
+
+def zotero_document_preference_issues(
+    custom_root: etree._Element | None,
+    *,
+    document_language: str | None,
+    style_id: str | None,
+) -> list[str]:
+    if not is_english_document_language(document_language):
+        return []
+    expected_style = normalize_zotero_style_id(style_id)
+    if custom_root is None:
+        return ["English export is missing docProps/custom.xml"]
+    raw = zotero_preference_text(custom_root)
+    if not raw:
+        return ["English export is missing Zotero document preferences"]
+    try:
+        preferences = etree.fromstring(raw.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return ["English Zotero document preferences are malformed"]
+    style = preferences.find("style")
+    expected_uri = f"http://www.zotero.org/styles/{expected_style}"
+    issues: list[str] = []
+    if style is None or style.get("id") != expected_uri:
+        actual = style.get("id") if style is not None else "missing"
+        issues.append(
+            f"English Zotero style is {actual}, expected {expected_uri}"
+        )
+    if style is None or style.get("locale") != "en-US":
+        issues.append("English Zotero style locale is not en-US")
+    field_types = [
+        node.get("value")
+        for node in preferences.xpath("./prefs/pref[@name='fieldType']")
+    ]
+    if field_types != ["Field"]:
+        issues.append(
+            f"English Zotero fieldType is {field_types or 'missing'}"
+        )
+    return issues
+
+
+def english_zotero_parenthesis_issues(
+    document: etree._Element,
+    *,
+    document_language: str | None,
+    western_font: str,
+) -> list[str]:
+    if not is_english_document_language(document_language):
+        return []
+    issues: list[str] = []
+    for index, field in enumerate(field_inventory(document), start=1):
+        if "ZOTERO_ITEM" not in field["code"].upper():
+            continue
+        _, replacements = normalize_zotero_formatted_citation(field["code"])
+        if replacements:
+            issues.append(
+                f"Zotero citation field {index} retains full-width parentheses"
+            )
+        for text_node in field["result_nodes"]:
+            value = text_node.text or ""
+            if "（" in value or "）" in value:
+                issues.append(
+                    f"Zotero citation result {index} retains full-width parentheses"
+                )
+                break
+            if "(" not in value and ")" not in value:
+                continue
+            runs = text_node.xpath("ancestor::w:r[1]", namespaces=NS)
+            fonts = (
+                runs[0].find("w:rPr/w:rFonts", namespaces=NS)
+                if runs
+                else None
+            )
+            if fonts is None:
+                issues.append(
+                    f"Zotero citation parentheses {index} lack direct fonts"
+                )
+                break
+            actual = {
+                slot: fonts.get(W(slot))
+                for slot in ("ascii", "hAnsi", "cs", "eastAsia")
+            }
+            if any(value != western_font for value in actual.values()):
+                issues.append(
+                    f"Zotero citation parentheses {index} use {actual}"
+                )
+                break
+            if fonts.get(W("hint")) == "eastAsia":
+                issues.append(
+                    f"Zotero citation parentheses {index} retain eastAsia hint"
+                )
+                break
+    return issues
+
+
+def highlighted_character_count(document: etree._Element) -> int:
+    count = 0
+    for run in document.xpath(
+        ".//w:r[w:rPr/w:highlight[not(@w:val='none')]]",
+        namespaces=NS,
+    ):
+        count += run_visible_text_length(run)
+    return count
+
+
+def shaded_character_counts(document: etree._Element) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for run in document.xpath(".//w:r[w:rPr/w:shd]", namespaces=NS):
+        fill = run.xpath("string(./w:rPr/w:shd/@w:fill)", namespaces=NS)
+        if re.fullmatch(r"[0-9A-Fa-f]{6}", fill or ""):
+            counts[fill.upper()] += run_visible_text_length(run)
+    return dict(sorted(counts.items()))
+
+
 def validate_docx(
     path: Path,
     *,
@@ -3291,6 +4150,11 @@ def validate_docx(
         document = etree.fromstring(archive.read("word/document.xml"))
         settings = etree.fromstring(archive.read("word/settings.xml"))
         styles_root = etree.fromstring(archive.read("word/styles.xml"))
+        custom_properties = (
+            etree.fromstring(archive.read("docProps/custom.xml"))
+            if "docProps/custom.xml" in archive.namelist()
+            else None
+        )
         styles = style_id_map(styles_root)
         fields = field_code_counts(document)
         scripts = script_run_counts(document)
@@ -3326,6 +4190,68 @@ def validate_docx(
         expected_margin = str(cm_twips(float(format_config["margin_cm"])))
 
         errors: list[str] = []
+        errors.extend(
+            inherited_font_issues(
+                styles_root,
+                document_language=source_inventory.get(
+                    "document_language", ""
+                ),
+                format_config=format_config,
+            )
+        )
+        errors.extend(
+            zotero_document_preference_issues(
+                custom_properties,
+                document_language=source_inventory.get(
+                    "document_language", ""
+                ),
+                style_id=source_inventory.get("zotero_csl_style", "apa"),
+            )
+        )
+        errors.extend(
+            english_zotero_parenthesis_issues(
+                document,
+                document_language=source_inventory.get(
+                    "document_language", ""
+                ),
+                western_font=str(format_config["western_font"]),
+            )
+        )
+        expected_highlight_chars = int(
+            source_inventory.get("highlight_chars", 0)
+        )
+        actual_highlight_chars = highlighted_character_count(document)
+        if actual_highlight_chars < expected_highlight_chars:
+            errors.append(
+                "Markdown highlighter count is incomplete: "
+                f"expected at least {expected_highlight_chars} highlighted "
+                f"characters, found {actual_highlight_chars}"
+            )
+        if expected_highlight_chars and any(
+            "==" in (node.text or "")
+            for node in document.xpath(".//w:t", namespaces=NS)
+        ):
+            errors.append("Literal == highlight markers remain in Word text")
+        expected_custom_highlights = {
+            str(color).upper(): int(count)
+            for color, count in source_inventory.get(
+                "custom_highlight_chars", {}
+            ).items()
+        }
+        actual_custom_highlights = shaded_character_counts(document)
+        for color, expected_count in expected_custom_highlights.items():
+            actual_count = actual_custom_highlights.get(color, 0)
+            if actual_count < expected_count:
+                errors.append(
+                    "Custom Markdown highlight count is incomplete for "
+                    f"#{color}: expected at least {expected_count} "
+                    f"characters, found {actual_count}"
+                )
+        if expected_custom_highlights and any(
+            "<mark" in (node.text or "").lower()
+            for node in document.xpath(".//w:t", namespaces=NS)
+        ):
+            errors.append("Literal HTML mark tags remain in Word text")
         expected_zotero_fields = int(
             source_inventory.get(
                 "expected_zotero_fields",
@@ -4181,6 +5107,10 @@ def main() -> int:
             resource_path=resource_path,
         )
         inventory = ast_inventory(ast)
+        format_config = language_aware_format_config(
+            format_config,
+            inventory.get("document_language", ""),
+        )
         inventory["equation_numbers"] = prepare_report["equation_numbers"]
         inventory["document_title"] = prepare_report["document_title"]
         inventory["note_paragraphs"] = prepare_report["note_paragraphs"]
@@ -4231,7 +5161,7 @@ def main() -> int:
         inventory["missing_citekeys"] = missing_keys
         inventory["unresolved_citation_clusters"] = unresolved_clusters
         pandoc_input = prepared_md
-        pandoc_input_format = "markdown+raw_html+tex_math_dollars"
+        pandoc_input_format = MARKDOWN_INPUT_FORMAT
         inventory["expected_zotero_fields"] = inventory["citation_clusters"]
         if missing_keys:
             compatible_ast = split_missing_citations_in_ast(

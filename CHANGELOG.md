@@ -11,6 +11,22 @@
 - 把遗留 UI 代码完全迁移为严格 TypeScript；
 - 增加模板可视化预览。
 
+## [1.5.3] - 2026-08-02
+
+### Fixed
+
+- English documents declared with `lang: en-US` now use the configured Western
+  font in all Word font slots and inherited styles. Refreshed Zotero citation
+  fields and bibliography entries therefore keep Times New Roman punctuation.
+- English exports now replace inherited Chinese Zotero document preferences
+  with the APA English style and normalize citation parentheses to ASCII before
+  Word is written, so Zotero Refresh no longer restores full-width brackets.
+- Obsidian `==highlight==` markup now becomes native yellow Word highlighting;
+  inline HTML `<mark style="background-color:...">...</mark>` spans preserve
+  their exact CSS background color as Word shading. Neither form leaves literal
+  Markdown or HTML delimiters in the exported document.
+- Chinese documents retain the configured East Asian/Western font pairing.
+
 ## [1.5.2] - 2026-07-31
 
 ### Fixed
