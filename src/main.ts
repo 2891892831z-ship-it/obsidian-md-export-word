@@ -36,7 +36,7 @@ import { obsidianBufferedRequest } from "./obsidian-buffered-request";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.5.3";
+const PLUGIN_VERSION = "1.5.4";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -106,7 +106,7 @@ const DEFAULT_FORMAT = Object.freeze({
   caption_size_pt: 10.5,
   caption_line_spacing: 1,
   note_size_pt: 7.5,
-  note_line_spacing: 1.5,
+  note_line_spacing: 1,
   formula_size_pt: 12,
   margin_cm: 2.54,
   figure_reflow: false
@@ -918,7 +918,7 @@ class FormatSettingsModal extends Modal {
     this.addDropdown(
       contentEl,
       t("format.noteLineSpacing.name"),
-      t("format.defaultValue", { value: formatOptions.lines["1.5"] }),
+      t("format.defaultValue", { value: formatOptions.lines["1.0"] }),
       "note_line_spacing",
       formatOptions.lines
     );

@@ -1664,6 +1664,27 @@ local function load_items()
     return
   end
   state.fetched = response.result
+  state.fetched.items = state.fetched.items or {}
+  state.fetched.errors = state.fetched.errors or {}
+
+  -- Better BibTeX may return an item under its current citation key while
+  -- preserving the requested legacy key in the CSL item's id field. Map all
+  -- returned key variants to the same item so legacy citekeys still produce
+  -- live Zotero fields instead of falling back to plain citation text.
+  local aliases = {}
+  for _, itemData in pairs(state.fetched.items) do
+    if type(itemData) == 'table' then
+      for _, field in ipairs({'id', 'citation-key', 'citekey'}) do
+        local alias = itemData[field]
+        if type(alias) == 'string' and alias ~= '' and state.fetched.items[alias] == nil then
+          aliases[alias] = itemData
+        end
+      end
+    end
+  end
+  for alias, itemData in pairs(aliases) do
+    state.fetched.items[alias] = itemData
+  end
 end
 
 function module.get(citekey)

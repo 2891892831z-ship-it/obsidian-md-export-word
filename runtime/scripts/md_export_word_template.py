@@ -129,7 +129,7 @@ DEFAULT_FORMAT_CONFIG: dict[str, Any] = {
     "caption_size_pt": 10.5,
     "caption_line_spacing": 1.0,
     "note_size_pt": 7.5,
-    "note_line_spacing": 1.5,
+    "note_line_spacing": 1.0,
     "formula_size_pt": 12.0,
     "margin_cm": 2.54,
     "figure_reflow": False,
@@ -230,16 +230,22 @@ def figure_image_max_height_dxa(config: dict[str, Any]) -> int:
 
 
 def format_config_summary(config: dict[str, Any]) -> str:
+    indent_unit = (
+        "个半角字符"
+        if is_english_document_language(config.get("document_language"))
+        else "个全角字"
+    )
     return (
         f"{config['preset_name']}（中文 {config['east_asia_font']}；"
         f"英文/数字 {config['western_font']}；"
         f"正文 {config['body_size_pt']} pt、"
         f"{config['body_line_spacing']} 倍行距、"
-        f"首行 {config['body_first_line_chars']} 字；"
+        f"首行 {config['body_first_line_chars']} {indent_unit}；"
         f"表格 {config['table_size_pt']} pt、"
         f"{config['table_line_spacing']} 倍行距；"
         f"图表题 {config['caption_size_pt']} pt；"
-        f"图表注 {config['note_size_pt']} pt；"
+        f"图表注 {config['note_size_pt']} pt、"
+        f"{config['note_line_spacing']} 倍行距；"
         f"页边距 {config['margin_cm']} cm；"
         f"图片分页回填 "
         f"{'开启' if config['figure_reflow'] else '关闭'}）"
@@ -441,6 +447,25 @@ def normalize_document_language(value: str | None) -> str:
 def is_english_document_language(value: str | None) -> bool:
     language = normalize_document_language(value)
     return bool(re.match(r"^en(?:-|$)", language, flags=re.IGNORECASE))
+
+
+def body_first_line_indent_twips(config: dict[str, Any]) -> int:
+    """Return a language-aware physical first-line indent.
+
+    Chinese character units use one em each. English character units use a
+    half-em each so a value of 2 means two Latin halfwidth characters rather
+    than two fullwidth CJK characters.
+    """
+    character_width = (
+        0.5
+        if is_english_document_language(config.get("document_language"))
+        else 1.0
+    )
+    return points_twips(
+        float(config["body_size_pt"])
+        * float(config["body_first_line_chars"])
+        * character_width
+    )
 
 
 def language_aware_format_config(
@@ -848,6 +873,7 @@ def set_paragraph_format(
     line: int,
     first_line: int,
     first_line_chars: float | None = None,
+    use_character_indent: bool = True,
     keep_next: bool = False,
     keep_lines: bool = False,
     page_break_before: bool = False,
@@ -867,9 +893,15 @@ def set_paragraph_format(
     indent = get_or_add(ppr, W("ind"))
     indent.attrib.clear()
     indent.set(W("firstLine"), str(first_line))
-    if first_line_chars is None:
-        first_line_chars = 2.0 if first_line else 0.0
-    indent.set(W("firstLineChars"), str(int(round(first_line_chars * 100))))
+    if use_character_indent:
+        if first_line_chars is None:
+            first_line_chars = 2.0 if first_line else 0.0
+        indent.set(
+            W("firstLineChars"),
+            str(int(round(first_line_chars * 100))),
+        )
+    else:
+        indent.attrib.pop(W("firstLineChars"), None)
     set_on_off(ppr, "keepNext", keep_next)
     set_on_off(ppr, "keepLines", keep_lines)
     set_on_off(ppr, "pageBreakBefore", page_break_before)
@@ -2114,13 +2146,21 @@ def check_citekeys(citekeys: list[str]) -> tuple[list[str], list[str]]:
         result = bbt_fetch_chunk(chunk)
         errors = result.get("errors", {})
         items = result.get("items", {})
+        resolved_keys = set(items)
+        for item in items.values():
+            if not isinstance(item, dict):
+                continue
+            for field in ("id", "citation-key", "citekey"):
+                resolved_key = item.get(field)
+                if isinstance(resolved_key, str) and resolved_key:
+                    resolved_keys.add(resolved_key)
         for key in chunk:
             if key in errors:
                 if errors[key] == 0:
                     missing.append(key)
                 else:
                     duplicates.append(key)
-            elif key not in items:
+            elif key not in resolved_keys:
                 missing.append(key)
     return missing, duplicates
 
@@ -3659,12 +3699,12 @@ def format_body_paragraphs(
                 before=0,
                 after=0,
                 line=line_twips(float(format_config["body_line_spacing"])),
-                first_line=points_twips(
-                    float(format_config["body_size_pt"])
-                    * float(format_config["body_first_line_chars"])
-                ),
+                first_line=body_first_line_indent_twips(format_config),
                 first_line_chars=float(
                     format_config["body_first_line_chars"]
+                ),
+                use_character_indent=not is_english_document_language(
+                    format_config.get("document_language")
                 ),
             )
             size = float(format_config["body_size_pt"])
@@ -4481,22 +4521,44 @@ def validate_docx(
                     f"段落 {paragraph_index}（{role}）行距不是设置值"
                 )
             if role == "body" and style_name != "Bibliography":
-                expected_chars = str(
-                    int(
-                        round(
-                            float(format_config["body_first_line_chars"])
-                            * 100
-                        )
-                    )
+                english_document = is_english_document_language(
+                    format_config.get("document_language")
+                )
+                expected_first_line = str(
+                    body_first_line_indent_twips(format_config)
+                )
+                actual_first_line = paragraph.xpath(
+                    "string(./w:pPr/w:ind/@w:firstLine)",
+                    namespaces=NS,
                 )
                 actual_chars = paragraph.xpath(
                     "string(./w:pPr/w:ind/@w:firstLineChars)",
                     namespaces=NS,
                 )
-                if actual_chars != expected_chars:
+                if actual_first_line != expected_first_line:
                     errors.append(
                         f"段落 {paragraph_index} 正文首行缩进不是设置值"
                     )
+                if english_document:
+                    if actual_chars not in ("", "0"):
+                        errors.append(
+                            f"段落 {paragraph_index} 英文正文误用了全角字符缩进"
+                        )
+                else:
+                    expected_chars = str(
+                        int(
+                            round(
+                                float(
+                                    format_config["body_first_line_chars"]
+                                )
+                                * 100
+                            )
+                        )
+                    )
+                    if actual_chars != expected_chars:
+                        errors.append(
+                            f"段落 {paragraph_index} 正文首行缩进不是设置值"
+                        )
         expected_title = str(source_inventory.get("document_title", ""))
         title_paragraphs = [
             paragraph

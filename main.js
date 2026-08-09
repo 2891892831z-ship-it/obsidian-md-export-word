@@ -2013,7 +2013,7 @@ var obsidianBufferedRequest = async ({
 };
 
 // src/main.ts
-var PLUGIN_VERSION = "1.5.3";
+var PLUGIN_VERSION = "1.5.4";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -2081,7 +2081,7 @@ var DEFAULT_FORMAT = Object.freeze({
   caption_size_pt: 10.5,
   caption_line_spacing: 1,
   note_size_pt: 7.5,
-  note_line_spacing: 1.5,
+  note_line_spacing: 1,
   formula_size_pt: 12,
   margin_cm: 2.54,
   figure_reflow: false
@@ -2722,7 +2722,7 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
     this.addDropdown(
       contentEl,
       t("format.noteLineSpacing.name"),
-      t("format.defaultValue", { value: formatOptions.lines["1.5"] }),
+      t("format.defaultValue", { value: formatOptions.lines["1.0"] }),
       "note_line_spacing",
       formatOptions.lines
     );
@@ -3772,7 +3772,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       return saved;
     }
     const stamped = String(
-      true ? "2891892831z-ship-it/obsidian-md-export-word" : ""
+      true ? "" : ""
     ).trim();
     return stamped;
   }
