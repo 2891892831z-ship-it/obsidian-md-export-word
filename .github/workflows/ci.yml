@@ -38,6 +38,9 @@ jobs:
       - name: Test language-aware quote fonts
         run: python scripts/test-quote-fonts.py
 
+      - name: Test image spacing and figure citation counts
+        run: python scripts/test-image-spacing.py
+
       - name: Check source
         run: npm run check
 
