@@ -1474,6 +1474,63 @@ def convert_obsidian_image_embeds(text: str) -> str:
     return pattern.sub(replace, text)
 
 
+def normalize_markdown_image_spacing(text: str) -> tuple[str, int]:
+    """Isolate standalone images in the temporary export copy.
+
+    Pandoc needs paragraph boundaries to create figures with visible captions.
+    Preserve existing blank lines and skip metadata, code and display math.
+    """
+    lines = text.splitlines()
+    image_lines: set[int] = set()
+    fence_char = ""
+    fence_length = 0
+    in_math = False
+    in_metadata = bool(lines and lines[0].strip() == "---")
+    image_pattern = re.compile(
+        r"^ {0,3}!\[.*\]\(.+\)(?:[ \t]*\{[^}]*\})?[ \t]*$"
+    )
+    for index, line in enumerate(lines):
+        if in_metadata:
+            if index and line.strip() in {"---", "..."}:
+                in_metadata = False
+            continue
+        if fence_char:
+            if re.fullmatch(
+                rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*",
+                line,
+            ):
+                fence_char = ""
+            continue
+        if line.strip() == "$$":
+            in_math = not in_math
+            continue
+        if in_math:
+            continue
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            fence_char = fence.group(1)[0]
+            fence_length = len(fence.group(1))
+            continue
+        if image_pattern.fullmatch(line):
+            image_lines.add(index)
+
+    output: list[str] = []
+    changes = 0
+    for index, line in enumerate(lines):
+        # Insert once per boundary, including between two adjacent images.
+        if (
+            index
+            and (index in image_lines or index - 1 in image_lines)
+            and lines[index - 1].strip()
+            and line.strip()
+        ):
+            output.append("")
+            changes += 1
+        output.append(line)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    return newline.join(output) + (newline if text.endswith("\n") else ""), changes
+
+
 def normalize_markdown_citation_spacing(text: str) -> tuple[str, int]:
     """Remove ordinary spaces around bracketed citations in prose.
 
@@ -1729,6 +1786,7 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
     note_paragraphs = count_markdown_note_paragraphs(prepared)
     prepared = inject_metadata(prepared)
     prepared = convert_obsidian_image_embeds(prepared)
+    prepared, image_space_changes = normalize_markdown_image_spacing(prepared)
     prepared, html_mark_changes = normalize_html_mark_highlights(prepared)
     prepared, citation_space_changes = normalize_markdown_citation_spacing(
         prepared
@@ -1739,6 +1797,7 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
         "static_references_removed": removed_static_refs,
         "equation_numbers": equation_numbers,
         "citation_space_changes": citation_space_changes,
+        "image_space_changes": image_space_changes,
         "html_mark_changes": html_mark_changes,
         "document_title": document_title,
         "frontmatter_title_suppressed": frontmatter_title_suppressed,
@@ -1812,7 +1871,40 @@ def pandoc_ast(
     return json.loads(result.stdout)
 
 
+def _dedupe_figure_alt_cites(node: Any) -> None:
+    # pandoc Figure 节点: c = [attr, caption, blocks]
+    # caption 与内部 Image 的 alt 各含同一份 inline(含 Cite),遍历
+    # 时同一图题引用被计数两次。清空 Figure 内部所有 Image 的 alt 副本,
+    # 只保留 caption 一份;Image 路径字段(c[2])不动,图片统计不受影响。
+    if isinstance(node, dict):
+        if node.get("t") == "Figure":
+            c = node.get("c")
+            if isinstance(c, list) and len(c) >= 3:
+                def _clear_img_alt(sub: Any) -> None:
+                    if isinstance(sub, dict):
+                        if sub.get("t") == "Image":
+                            cc = sub.get("c")
+                            if isinstance(cc, list) and len(cc) >= 2:
+                                cc[1] = []
+                            return
+                        for v in sub.values():
+                            _clear_img_alt(v)
+                    elif isinstance(sub, list):
+                        for v in sub:
+                            _clear_img_alt(v)
+                _clear_img_alt(c[2])
+            return
+        for v in node.values():
+            _dedupe_figure_alt_cites(v)
+    elif isinstance(node, list):
+        for v in node:
+            _dedupe_figure_alt_cites(v)
+
+
 def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
+    import copy
+    ast = copy.deepcopy(ast)
+    _dedupe_figure_alt_cites(ast)
     citation_clusters = 0
     citekeys: list[str] = []
     image_targets: list[str] = []
