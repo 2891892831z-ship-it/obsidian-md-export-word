@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -55,6 +57,138 @@ def run_export(
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def require_equation_label_normalization(exporter: Path) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "md_export_word_template_smoke",
+        exporter,
+    )
+    require(spec is not None and spec.loader is not None, "Exporter import failed")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    cases = [
+        (
+            "generated label",
+            "见式（2）。\n\n$$\ny=2\n$$\n\n下文。\n",
+            "$$\n{#eq:paperbell-2}\n\n",
+        ),
+        (
+            "legacy inline label",
+            "见式（1）。\n\n$$\nx=1\n$$ {#eq:existing}\n\n下文。\n",
+            "$$\n{#eq:existing}\n\n",
+        ),
+        (
+            "standalone label",
+            "见式（3）。\n\n$$\nz=3\n$$\n{#eq:kept}\n\n下文。\n",
+            "$$\n{#eq:kept}\n\n",
+        ),
+    ]
+    for name, source, expected in cases:
+        normalized, _ = module.label_numbered_equations(source)
+        require("$$ {#eq:" not in normalized, f"Inline label remains: {name}")
+        require(expected in normalized, f"Equation label layout failed: {name}")
+
+
+def require_export_normalization(exporter: Path, pandoc: Path) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "md_export_word_normalization_smoke",
+        exporter,
+    )
+    require(spec is not None and spec.loader is not None, "Exporter import failed")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    source = (
+        "---\n"
+        "title: Highlight fixture\n"
+        "---\n\n"
+        '==outer [colored]{custom-style="MDExportWordMarkF0D8B8"} text=='
+        " and `==code==` and $x==y$\n\n"
+        "Method ==[@example]==.\n\n"
+        "注：测试图注。\n"
+    )
+    prepared, report = module.prepare_markdown(source)
+    require(
+        report["markdown_mark_changes"] == 4,
+        "Markdown mark delimiters were not normalized",
+    )
+    require(
+        "[outer [colored]{custom-style=\"MDExportWordMarkF0D8B8\"} text]{.mark}"
+        in prepared,
+        "Nested custom Markdown mark was not retained",
+    )
+    require("`==code==`" in prepared, "Inline-code markers were modified")
+    require("$x==y$" in prepared, "Math markers were modified")
+    require(
+        "Method [[@example]]{.mark}." in prepared,
+        "Citation spacing inside a Markdown mark was not normalized",
+    )
+    require(
+        "zotero-author-in-text: true" in prepared,
+        "Author-in-text Zotero metadata was not enabled for export",
+    )
+
+    disabled = module.inject_metadata(
+        "---\nzotero-author-in-text: false\n---\n\nText.\n"
+    )
+    require(
+        "zotero-author-in-text: false" in disabled
+        and "zotero-author-in-text: true" not in disabled,
+        "Explicit author-in-text metadata was overwritten",
+    )
+
+    with tempfile.TemporaryDirectory() as temp_name:
+        temp = Path(temp_name)
+        markdown = temp / "prepared.md"
+        markdown.write_text(prepared, encoding="utf-8")
+        ast = module.pandoc_ast(
+            pandoc,
+            markdown,
+            cwd=temp,
+            resource_path=str(temp),
+        )
+    mark_spans = [
+        node
+        for node in module.walk_ast(ast)
+        if node.get("t") == "Span" and "mark" in node.get("c", [[], []])[0][1]
+    ]
+    require(
+        any(
+            any(
+                child.get("t") == "Span"
+                and dict(child.get("c", [[], []])[0][2]).get("custom-style")
+                == "MDExportWordMarkF0D8B8"
+                for child in module.walk_ast(span)
+            )
+            for span in mark_spans
+        ),
+        "Pandoc did not retain nested custom highlight spans",
+    )
+    require(
+        module.count_ast_note_paragraphs(ast) == 1,
+        "AST note paragraph count is incorrect",
+    )
+    inventory = module.ast_inventory(ast)
+    require(
+        inventory["highlight_chars"] == 16,
+        "Nested Markdown marks were counted more than once",
+    )
+    require(
+        inventory["custom_highlight_chars"].get("F0D8B8") == 7,
+        "Custom highlight whitespace affected the visible-character count",
+    )
+
+    paragraph = module.etree.fromstring(
+        f'<w:p xmlns:w="{W_NS}"><w:r><w:t>地质 He含量 CO2</w:t></w:r></w:p>'
+    )
+    module.normalize_paragraph_text(paragraph, role="body", skip=False)
+    visible = "".join(paragraph.xpath(".//w:t/text()", namespaces=module.NS))
+    require(
+        visible == "地质 He含量 CO2",
+        "CJK/Latin/digit spacing was changed during DOCX cleanup",
+    )
 
 
 def write_zotero_color_fixture(path: Path) -> None:
@@ -176,19 +310,15 @@ def figure_reflow_inventory(path: Path) -> dict[str, int]:
             moved_index = index
         if "边界段落不得移动到上一张图片之前" in text:
             boundary_index = index
-        if "图1分页回填测试大图" in text.replace(" ", ""):
+        if "图1分页回填测试大图" in re.sub(r"\s+", "", text):
             chinese_caption_index = index
-        if "Figure1.Largefigureforpage-reflowtesting" in text.replace(
-            " ", ""
-        ):
+        if "Figure1.Largefigureforpage-reflowtesting" in re.sub(r"\s+", "", text):
             english_caption_index = index
         if "本条中文图注必须始终跟随图片" in text:
             chinese_note_index = index
-        if "bilingualcaptionsandfigurenotesmustremain" in text.replace(
-            " ", ""
-        ).lower():
+        if "bilingualcaptionsandfigurenotesmustremain" in re.sub(r"\s+", "", text).lower():
             english_note_index = index
-        if text.replace(" ", "").strip() == "图1分页测试大图":
+        if re.sub(r"\s+", "", text).strip() == "图1分页测试大图":
             generated_alt_caption_count += 1
     return {
         "image_index": image_index,
@@ -214,6 +344,8 @@ def main() -> int:
     exporter = (
         workspace / "runtime" / "scripts" / "md_export_word_template.py"
     )
+    require_equation_label_normalization(exporter)
+    require_export_normalization(exporter, args.pandoc.resolve())
     recolor = (
         workspace / "runtime" / "scripts" / "recolor_zotero_citations.py"
     )

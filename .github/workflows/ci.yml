@@ -44,6 +44,11 @@ jobs:
       - name: Check source
         run: npm run check
 
+      - name: Test manuscript formatting and export review
+        run: |
+          python scripts/test-manuscript-language.py
+          python scripts/test-export-review.py
+
       - name: Build plugin
         run: npm run build
 

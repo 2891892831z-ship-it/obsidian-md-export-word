@@ -11,6 +11,10 @@ const packageJson = readJson("package.json");
 const packageLock = readJson("package-lock.json");
 const versions = readJson("versions.json");
 const runtime = readJson("runtime/runtime-manifest.json");
+const runtimeExporter = fs.readFileSync(
+  path.join(root, "runtime/scripts/md_export_word_template.py"),
+  "utf8"
+);
 
 if (manifest.version !== packageJson.version) {
   errors.push("manifest.json 与 package.json 版本不一致");
@@ -40,6 +44,9 @@ if (!sourceVersionPattern.test(fs.readFileSync("src/main.ts", "utf8"))) {
 }
 if (!sourceVersionPattern.test(fs.readFileSync("main.js", "utf8"))) {
   errors.push("main.js 尚未按当前 manifest.json 版本重新构建");
+}
+if (/\$\$\s+\{\{?#eq:/.test(runtimeExporter)) {
+  errors.push("运行时导出器不得生成同行公式标签 $$ {#eq:...}");
 }
 const citationVersion = fs
   .readFileSync("CITATION.cff", "utf8")

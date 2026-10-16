@@ -1,19 +1,20 @@
 {
   "name": "obsidian-md-export-word",
-  "version": "1.5.4",
+  "version": "1.6.0",
   "description": "Cross-platform Obsidian Markdown to formatted Word exporter.",
   "main": "main.js",
   "type": "module",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "npm run typecheck && node esbuild.config.mjs production",
+    "build": "npm run typecheck && node scripts/build-csl-renderer.mjs && node esbuild.config.mjs production",
     "typecheck": "tsc --noEmit --skipLibCheck",
     "lint": "eslint src scripts",
     "validate": "node scripts/validate-repository.mjs",
     "test:installer": "node scripts/test-runtime-install.mjs",
     "test:i18n": "node scripts/test-i18n.mjs",
     "test:runtime-download": "node scripts/test-runtime-download.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test:installer && npm run test:i18n && npm run test:runtime-download && npm run validate",
+    "test:zotero-styles": "node scripts/test-zotero-styles.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test:installer && npm run test:i18n && npm run test:runtime-download && npm run test:zotero-styles && npm run validate",
     "version": "node scripts/version-bump.mjs && git add manifest.json versions.json runtime/runtime-manifest.json"
   },
   "keywords": [
@@ -31,6 +32,8 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@types/node": "^22.15.17",
+    "citeproc": "^2.4.63",
+    "citeproc-locales": "^1.0.2",
     "esbuild": "0.25.5",
     "eslint": "^9.39.4",
     "globals": "^17.6.0",
