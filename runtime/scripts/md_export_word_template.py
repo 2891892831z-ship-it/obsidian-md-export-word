@@ -1481,6 +1481,20 @@ def suppress_frontmatter_title_when_h1_exists(
     if frontmatter_end is None:
         return text, document_title, False
 
+    h1_count = sum(
+        1
+        for index in range(body_start, len(lines))
+        if re.match(r"^\s*#\s+\S", lines[index])
+    )
+    if h1_count > 1 and metadata_title:
+        # Multi-chapter document (e.g. a thesis): the first H1 is a chapter
+        # heading, not the article title. Keep the frontmatter title so
+        # Pandoc renders the document title block, and leave all chapter
+        # headings at their original level; format_body_paragraphs already
+        # typesets non-title H1s as heading2, matching the single-article
+        # demotion logic.
+        return text, metadata_title, False
+
     if (
         heading_index is not None
         and document_title.casefold() in {"摘要", "abstract"}
