@@ -168,7 +168,7 @@ def require_zotero_english_policy(module) -> None:
         "Colored HTML mark did not preserve its exact custom color",
     )
     require(
-        "==plain mark==" in normalized_marks,
+        "[plain mark]{.mark}" in normalized_marks,
         "Uncolored HTML mark was not converted to native highlighting",
     )
     require(
@@ -199,7 +199,7 @@ def require_zotero_english_policy(module) -> None:
         }
     )
     require(
-        highlight_inventory["highlight_chars"] == len("highlighted text"),
+        highlight_inventory["highlight_chars"] == len("highlightedtext"),
         "Markdown highlight characters were not inventoried",
     )
     custom_highlight_inventory = module.ast_inventory(

@@ -91,6 +91,10 @@ export const zhCN = {
   "format.bodySize.name": "正文字号",
   "format.bodyLineSpacing.name": "正文行距",
   "format.bodyIndent.name": "正文首行缩进",
+  "format.documentLanguage.name": "稿件语言",
+  "format.documentLanguage.desc": "默认沿用笔记 lang；英文稿首行缩进两个半角字符宽（1 em）、全字体新罗马，中文稿首行缩进两个全角字宽（2 em）。正文均两端对齐，可继续调整。",
+  "format.documentLanguage.zhCN": "中文稿",
+  "format.documentLanguage.en": "英文稿",
   "format.section.headings": "题目与标题",
   "format.titleSize.name": "文章题目字号（Markdown #）",
   "format.titleLineSpacing.name": "文章题目行距",
@@ -374,7 +378,18 @@ export const zhCN = {
   "progress.recolor.complete": "引文着色完成",
   "progress.recolor.failed": "引文着色失败",
   "progress.recolor.cancelled": "已取消",
-  "progress.recolor.cancelledDetail": "用户中止引文着色"
+  "progress.recolor.cancelledDetail": "用户中止引文着色",
+  "format.citationStyle.name": "引用样式（Zotero）",
+  "format.citationStyle.desc": "读取本机 Zotero 已安装样式，仅用于本次导出；Word 中仍可刷新和更换样式。",
+  "format.citationStyle.empty": "未找到本机 Zotero 样式；可安装样式后重新读取，或沿用稿件设置。",
+  "format.citationStyle.follow": "沿用稿件设置",
+  "format.citationStyle.refresh": "重新读取",
+  "format.citationStyle.parentMissing": "此样式缺少本机父样式。请改用 Word 手动刷新，或先在 Zotero 中重装该样式。",
+  "format.citationDisplay.name": "引用初始显示",
+  "format.citationDisplay.desc": "两种方式均保留 Zotero 引用域。提前生成只填充初始显示；不兼容的样式将保留提示，交由 Word 中的 Zotero 刷新。",
+  "progress.export.citationFallback": "引用改由 Word 中的 Zotero 刷新",
+  "format.citationDisplay.manual": "在 Word 中手动刷新",
+  "format.citationDisplay.rendered": "导出时先生成可读引用（默认）"
 } as const;
 
 export type TranslationKey = keyof typeof zhCN;

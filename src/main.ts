@@ -33,10 +33,11 @@ import {
   translateDynamic
 } from "./i18n";
 import { obsidianBufferedRequest } from "./obsidian-buffered-request";
+import { discoverZoteroStyles } from "./zotero-styles";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.5.4";
+const PLUGIN_VERSION = "1.6.0";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -90,6 +91,7 @@ const RUNTIME_TARGETS = Object.freeze({
 const DEFAULT_TEMPLATE_FILE = "导出格式模板.docx";
 const DEFAULT_FORMAT = Object.freeze({
   preset_name: "当前期刊模板",
+  document_language: "zh-CN",
   east_asia_font: "宋体",
   western_font: "Times New Roman",
   body_size_pt: 12,
@@ -304,6 +306,7 @@ function cloneFormat(config = DEFAULT_FORMAT) {
 
 function formatSummary(config, t = DEFAULT_TRANSLATOR) {
   return t("format.summary", {
+    documentLanguage: config.document_language === "en-US" ? "English" : "中文",
     eastAsiaFont: config.east_asia_font,
     westernFont: config.western_font,
     bodySize: config.body_size_pt,
@@ -594,6 +597,12 @@ class FormatSettingsModal extends Modal {
       ? options.templateFiles
       : [DEFAULT_TEMPLATE_FILE];
     this.figureReflowDefault = options.figureReflowDefault === true;
+    this.documentLanguage = /^en(?:[-_]|$)/i.test(String(options.documentLanguage || "")) ? "en-US" : "zh-CN";
+    this.citationReport=options.citationReport || {};
+    this.zoteroStyles=options.zoteroStyles || {styles:[],directories:[]};
+    const defaultCitationStyleId=plugin.exportSettings?.defaultCitationStyleId || "";
+    this.citationStyleId=this.zoteroStyles.styles.some(style=>style.id===defaultCitationStyleId) ? defaultCitationStyleId : "";
+    this.citationDisplay="rendered";
     this.selectedPreset = "__default__";
     this.config = this.defaultCommandFormat();
     this.templateFile = this.templateFiles.includes(DEFAULT_TEMPLATE_FILE)
@@ -606,6 +615,8 @@ class FormatSettingsModal extends Modal {
 
   defaultCommandFormat() {
     return cloneFormat({
+      document_language: this.documentLanguage,
+      ...(this.documentLanguage === "en-US" ? {body_first_line_chars: 2, east_asia_font: "Times New Roman"} : {}),
       figure_reflow: this.figureReflowDefault
     });
   }
@@ -647,6 +658,11 @@ class FormatSettingsModal extends Modal {
         : this.templateFiles[0]
       : this.templateFile;
     const requestedName = this.presetName.trim();
+    const chosenStyle=this.zoteroStyles.styles.find(style=>style.id===this.citationStyleId);
+    if(this.citationDisplay==="rendered" && chosenStyle && !chosenStyle.renderPath) {
+      new Notice(t("format.citationStyle.parentMissing"));
+      return;
+    }
     if (savePreset && !requestedName) {
       new Notice(t("format.saveName.required"));
       return;
@@ -674,7 +690,9 @@ class FormatSettingsModal extends Modal {
       savePreset,
       presetName: requestedName,
       displayName,
-      outputName: normalizedOutput.value
+      outputName: normalizedOutput.value,
+      citationStyle: this.zoteroStyles.styles.find(style=>style.id===this.citationStyleId) || null,
+      citationDisplay: this.citationDisplay
     });
   }
 
@@ -709,7 +727,72 @@ class FormatSettingsModal extends Modal {
     contentEl.style.maxHeight = "80vh";
     contentEl.style.overflowY = "auto";
     contentEl.createEl("h2", { text: t("format.title") });
+    const summary=contentEl.createDiv({cls:"md-export-format-summary"});
+    summary.style.cssText="position:sticky;top:0;z-index:2;padding:12px;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:8px;white-space:pre-wrap;";
+    const updateSummary=()=>{
+      const selectedStyle=this.zoteroStyles.styles.find(style=>style.id===this.citationStyleId);
+      const styleLabel=selectedStyle?.title || this.citationReport.style;
+      const english=this.config.document_language==="en-US",uiEnglish=this.plugin.getLanguage()==="en";
+      const indent=Number(this.config.body_first_line_chars)*(english?0.5:1);
+      const lines=uiEnglish ? ["Current export format",`Manuscript: ${english?"English":"Chinese"}`,`Font: ${english?this.config.western_font:this.config.east_asia_font+" / "+this.config.western_font}`,`Body: ${this.config.body_size_pt} pt; line spacing ${this.config.body_line_spacing}`,`First-line indent: ${indent} em; alignment: justified`,`CSL: ${this.citationReport.style || "Global/default citation style"}`] :
+        ["本次实际导出格式",`稿件：${english?"英文":"中文"}`,`字体：${english?this.config.western_font:this.config.east_asia_font+" / "+this.config.western_font}`,`正文：${this.config.body_size_pt} pt；行距 ${this.config.body_line_spacing} 倍`,`首行缩进：${indent} em；正文两端对齐`,`引用样式：${this.citationReport.style || "全局／默认 CSL"}`];
+      lines[lines.length-1]=(uiEnglish?"Citation style: ":"引用样式：")+(styleLabel || t("format.citationStyle.follow"));
+      if(!selectedStyle && this.citationReport.issues?.length)lines.push((uiEnglish?"Check: ":"需核实：")+this.citationReport.issues.join("\n"));
+      summary.setText(lines.join("\n"));
+    };
+    updateSummary();
+    contentEl.oninput=()=>queueMicrotask(updateSummary);
+    contentEl.onchange=()=>queueMicrotask(updateSummary);
     addLanguageSetting(contentEl, this.plugin);
+    new Setting(contentEl)
+      .setName(t("format.citationStyle.name"))
+      .setDesc(t(this.zoteroStyles.styles.length ? "format.citationStyle.desc" : "format.citationStyle.empty"))
+      .addDropdown(dropdown=>{
+        dropdown.addOption("",t("format.citationStyle.follow"));
+        for(const style of this.zoteroStyles.styles) dropdown.addOption(style.id,style.title);
+        dropdown.setValue(this.citationStyleId).onChange(value=>{this.citationStyleId=value;updateSummary();});
+        dropdown.selectEl.style.maxWidth="360px";
+      })
+      .addButton(button=>button.setButtonText(t("format.citationStyle.refresh")).onClick(async()=>{
+        button.setDisabled(true);
+        try {
+          this.zoteroStyles=await discoverZoteroStyles();
+          if(!this.zoteroStyles.styles.some(style=>style.id===this.citationStyleId))this.citationStyleId="";
+          this.render();
+        } finally {button.setDisabled(false);}
+      }));
+    new Setting(contentEl)
+      .setName(t("format.citationDisplay.name"))
+      .setDesc(t("format.citationDisplay.desc"))
+      .addDropdown(dropdown=>dropdown
+        .addOption("manual",t("format.citationDisplay.manual"))
+        .addOption("rendered",t("format.citationDisplay.rendered"))
+        .setValue(this.citationDisplay).onChange(value=>{this.citationDisplay=value;}));
+    new Setting(contentEl)
+      .setName(t("format.documentLanguage.name"))
+      .setDesc(t("format.documentLanguage.desc"))
+      .addButton((button) => {
+        button
+          .setButtonText(t("format.documentLanguage.zhCN"))
+          .onClick(() => {
+            this.config.document_language = "zh-CN";
+            this.config.body_first_line_chars = 2;
+            this.config.east_asia_font = "宋体";
+            this.render();
+          });
+        if (this.config.document_language !== "en-US") button.setCta();
+      })
+      .addButton((button) => {
+        button
+          .setButtonText(t("format.documentLanguage.en"))
+          .onClick(() => {
+            this.config.document_language = "en-US";
+            this.config.body_first_line_chars = 2;
+            this.config.east_asia_font = this.config.western_font;
+            this.render();
+          });
+        if (this.config.document_language === "en-US") button.setCta();
+      });
     contentEl.createEl("p", {
       text: t("format.intro", {
         summary: formatSummary(this.defaultCommandFormat(), t)
@@ -2767,7 +2850,8 @@ export default class MdExportWordPlugin extends Plugin {
     });
   }
 
-  selectFormatSettings(templateFiles, outputName, options = {}) {
+  async selectFormatSettings(templateFiles, outputName, options = {}) {
+    const zoteroStyles=options.zoteroStyles || await discoverZoteroStyles();
     return new Promise((resolve) => {
       new FormatSettingsModal(
         this,
@@ -2775,7 +2859,10 @@ export default class MdExportWordPlugin extends Plugin {
           presets: this.exportSettings.presets,
           templateFiles,
           outputName,
-          figureReflowDefault: options.figureReflowDefault === true
+          figureReflowDefault: options.figureReflowDefault === true,
+          documentLanguage: options.documentLanguage,
+          citationReport: options.citationReport,
+          zoteroStyles
         },
         resolve
       ).open();
@@ -3112,11 +3199,28 @@ export default class MdExportWordPlugin extends Plugin {
       return;
     }
 
+    const citationViewPlugin=this.app.plugins.plugins["paper-caption-preview"];
+    const citationSource=fs.readFileSync(markdownPath,"utf8");
+    const citationReport=citationViewPlugin?.citationLanguageReport ? await citationViewPlugin.citationLanguageReport(file,citationSource) :
+      {style:this.app.metadataCache.getFileCache(file)?.frontmatter?.csl || this.app.plugins.plugins["obsidian-pandoc-reference-list"]?.settings?.cslStylePath || ""};
     const formatSelection = await this.selectFormatSettings(
       templateFiles,
       defaultOutputName,
       {
-        figureReflowDefault: options.figureReflowDefault === true
+        figureReflowDefault: options.figureReflowDefault === true,
+        citationReport,
+        documentLanguage: (() => {
+          const source=fs.readFileSync(markdownPath,"utf8");
+          const viewPlugin=this.app.plugins.plugins["paper-caption-preview"];
+          if(viewPlugin?.languageFor)return viewPlugin.languageFor(file,source)==="en"?"en-US":"zh-CN";
+          const fm=this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+          if(fm.lang)return fm.lang;
+          if(fm.cssclasses?.includes("en-doc"))return "en-US";
+          const body=source.replace(/^---\r?\n[\s\S]*?\r?\n---/,"").replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g,"")
+            .replace(/!\[[^\r\n]*|\[@[^\]]*\]|https?:\/\/\S+|<[^>]*>/g,"").slice(0,30000);
+          const han=(body.match(/[\p{Script=Han}]/gu)||[]).length,latin=(body.match(/[A-Za-z]/g)||[]).length;
+          return latin>=40 && han/(han+latin)<0.15?"en-US":"zh-CN";
+        })()
       }
     );
     if (!formatSelection) {
@@ -3216,6 +3320,9 @@ export default class MdExportWordPlugin extends Plugin {
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
           MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config),
+          MD_EXPORT_WORD_CSL: formatSelection.citationStyle?.path || "",
+          MD_EXPORT_WORD_CSL_RENDER: formatSelection.citationStyle?.renderPath || "",
+          MD_EXPORT_WORD_CITATION_DISPLAY: formatSelection.citationDisplay,
           MD_EXPORT_WORD_PANDOC: runtimePaths.pandoc,
           MD_EXPORT_WORD_CROSSREF: runtimePaths.crossref
         },

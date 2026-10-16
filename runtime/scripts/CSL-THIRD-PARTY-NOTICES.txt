@@ -1,0 +1,17 @@
+The bundled render_csl.cjs includes citeproc-js 1.4.63 (npm citeproc 2.4.63).
+Copyright (c) 2009-2019 Frank Bennett.
+Source: https://github.com/Juris-M/citeproc-js
+License: CPAL version 1.0 or later, OR GNU Affero General Public License
+version 3 or later, at your option. License texts are available at:
+https://opensource.org/license/cpal-1-0
+https://www.gnu.org/licenses/agpl-3.0.html
+
+Locale XML is distributed by citeproc-locales 1.0.2, by Frank Bennett.
+Source: https://github.com/Juris-M/citeproc-locales
+Package license: MIT.
+The individual locale XML files retain their own attribution metadata.
+
+This bundle is generated from unmodified dependencies by
+scripts/build-csl-renderer.mjs. Exact dependency versions and integrity
+values are recorded in package-lock.json. The application's wrapper is
+src/csl-renderer.ts. Citation Style Language: https://citationstyles.org/

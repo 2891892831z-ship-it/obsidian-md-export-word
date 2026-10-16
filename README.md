@@ -1,3 +1,7 @@
+---
+date modified: 2026.10.16 14:55:12
+---
+
 # MD Export Word
 
 将 Obsidian Markdown 导出为可继续编辑的 Word 文档，保留学术写作中最费时的
@@ -12,10 +16,12 @@
 - 从命令面板导出当前 Markdown，不要求文档位于固定文件夹。
 - 插件界面可跟随 Obsidian，也可固定为简体中文或 English；切换后运行时
   安装窗口和导出窗口立即更新，无需重启。
-- `CO₂`、`δ¹³C`、`T₈₅` 等以 Word 的真实上下标属性写入，不是替代字符或缩小字体。
+- HTML 上下标（如 `CO<sub>2</sub>`、`δ<sup>13</sup>C`、`T<sub>85</sub>`）以 Word 的真实上下标属性写入。
 - 支持 Pandoc、pandoc-crossref、公式编号、图表交叉引用和 Word 公式。
 - 严格模式：Zotero 缺少 citekey 时停止；兼容模式：保留醒目占位符并继续导出。
 - Zotero 引文和参考文献写成可刷新域，后续可在 Word 中执行 Zotero Refresh。
+- 导出时可从本机 Zotero 已安装样式中选择，默认沿用稿件设置；默认先生成可读引文与参考文献，仍保留动态域。
+- 支持中文和英文稿件格式切换，并在窗口顶部确认实际导出字体、缩进及引用样式。
 - Zotero Refresh 覆盖正文引文颜色后，可从命令面板生成蓝色引文副本；
   不覆盖源 Word、不删除 Zotero 域，Windows 与 macOS 均可使用。
 - 期刊、毕业论文等多个 `.docx` 模板可选；自定义模板不会被运行时更新覆盖。
@@ -43,6 +49,7 @@
 - Python 3.10 或更高版本；
 - 首次安装运行时需要访问 GitHub 和 Python Package Index；
 - 若要生成可刷新引用，需要 Zotero 与 Better BibTeX。
+- 对含多个语言 layout 的 CSL 样式提前生成可读引用，还需要系统 PATH 中可用的 Node.js（建议 20 或更高版本）；普通 CSL 渲染与手动刷新方式不需要它。
 
 安装步骤：
 

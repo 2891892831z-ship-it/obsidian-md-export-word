@@ -99,6 +99,10 @@ export const en: Record<TranslationKey, string> = {
   "format.bodySize.name": "Body font size",
   "format.bodyLineSpacing.name": "Body line spacing",
   "format.bodyIndent.name": "Body first-line indent",
+  "format.documentLanguage.name": "Manuscript language",
+  "format.documentLanguage.desc": "Defaults to the note's lang. English uses a two-halfwidth-character indent (1 em) and Times New Roman; Chinese uses two fullwidth characters (2 em). Body text is justified; settings remain editable.",
+  "format.documentLanguage.zhCN": "Chinese",
+  "format.documentLanguage.en": "English",
   "format.section.headings": "Title and headings",
   "format.titleSize.name": "Article title size (Markdown #)",
   "format.titleLineSpacing.name": "Article title line spacing",
@@ -417,5 +421,16 @@ export const en: Record<TranslationKey, string> = {
   "progress.recolor.failed": "Citation coloring failed",
   "progress.recolor.cancelled": "Cancelled",
   "progress.recolor.cancelledDetail":
-    "The user cancelled citation coloring"
+    "The user cancelled citation coloring",
+  "format.citationStyle.name": "Citation style (Zotero)",
+  "format.citationStyle.desc": "Read styles installed in local Zotero for this export. Refresh and style changes remain available in Word.",
+  "format.citationStyle.empty": "No local Zotero styles found. Install styles and reload, or keep manuscript settings.",
+  "format.citationStyle.follow": "Use manuscript settings",
+  "format.citationStyle.refresh": "Reload styles",
+  "format.citationStyle.parentMissing": "The local parent style is missing. Use manual Word refresh, or reinstall this style in Zotero first.",
+  "format.citationDisplay.name": "Initial citation display",
+  "format.citationDisplay.desc": "Both modes preserve Zotero fields. Initial rendering falls back to Word Zotero Refresh for unsupported styles.",
+  "progress.export.citationFallback": "Refresh citations with Zotero in Word",
+  "format.citationDisplay.manual": "Refresh manually in Word",
+  "format.citationDisplay.rendered": "Render readable citations during export (default)"
 };

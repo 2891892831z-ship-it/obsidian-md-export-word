@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -113,6 +114,7 @@ class ExportError(RuntimeError):
 
 DEFAULT_FORMAT_CONFIG: dict[str, Any] = {
     "preset_name": "当前期刊模板",
+    "document_language": "zh-CN",
     "east_asia_font": "宋体",
     "western_font": "Times New Roman",
     "body_size_pt": 12.0,
@@ -174,6 +176,12 @@ def load_format_config(raw_json: str | None) -> dict[str, Any]:
         if not value:
             raise ExportError(f"格式设置 {key} 不能为空")
         config[key] = value
+
+    if "document_language" in supplied:
+        language = normalize_document_language(str(supplied["document_language"]))
+        if language not in {"zh-CN", "en-US"}:
+            raise ExportError("格式设置 document_language 必须是 zh-CN 或 en-US")
+        config["document_language"] = language
 
     if "figure_reflow" in supplied:
         value = supplied["figure_reflow"]
@@ -480,7 +488,11 @@ def language_aware_format_config(
     documents retain the configured East Asian/Western font pairing.
     """
     effective = copy.deepcopy(format_config)
-    language = normalize_document_language(document_language)
+    # The format dialog supplies an explicit manuscript language.  Keep the
+    # Markdown ``lang`` metadata only as a backwards-compatible fallback for
+    # callers that do not provide the new setting.
+    configured = normalize_document_language(format_config.get("document_language"))
+    language = configured or normalize_document_language(document_language)
     effective["document_language"] = language
     if is_english_document_language(language):
         effective["east_asia_font"] = str(effective["western_font"])
@@ -558,6 +570,8 @@ def patch_inherited_font_defaults(
 
 def normalize_zotero_style_id(value: str | None) -> str:
     style = str(value or "").strip()
+    if re.fullmatch(r"https?://[^\s<>\"]+", style) and not style.startswith("http://www.zotero.org/styles/"):
+        return style
     prefix = "http://www.zotero.org/styles/"
     if style.startswith(prefix):
         style = style[len(prefix):]
@@ -568,6 +582,29 @@ def normalize_zotero_style_id(value: str | None) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", style):
         return "apa"
     return style or "apa"
+
+
+def zotero_style_uri(value):
+    style = normalize_zotero_style_id(value)
+    return style if re.match(r"^https?://", style) else f"http://www.zotero.org/styles/{style}"
+
+
+def selected_csl_metadata(value, vault_root):
+    """Read the real CSL ID; filenames are not reliable Zotero style IDs."""
+    csl_path = Path(value).expanduser()
+    if not csl_path.is_absolute():
+        csl_path = vault_root / csl_path
+    if not csl_path.is_file():
+        raise ExportError(f"所选引用样式不存在：{csl_path}")
+    try:
+        xml = etree.parse(str(csl_path), etree.XMLParser(resolve_entities=False, no_network=True))
+    except etree.XMLSyntaxError as error:
+        raise ExportError(f"引用样式 XML 无效：{csl_path}") from error
+    ns = {"csl":"http://purl.org/net/xbiblio/csl"}
+    style_id = xml.findtext("csl:info/csl:id", namespaces=ns)
+    if not style_id or not re.fullmatch(r"https?://[^\s<>\"]+", style_id.strip()):
+        raise ExportError(f"引用样式缺少有效 CSL ID：{csl_path}")
+    return csl_path.resolve(), style_id.strip()
 
 
 def zotero_preference_properties(
@@ -598,7 +635,7 @@ def english_zotero_preferences(style_id: str) -> str:
     root.set("zotero-version", "5.0.89")
     etree.SubElement(root, "session").set("id", "MDExportWord")
     style = etree.SubElement(root, "style")
-    style.set("id", f"http://www.zotero.org/styles/{style_id}")
+    style.set("id", zotero_style_uri(style_id))
     style.set("locale", "en-US")
     style.set("hasBibliography", "1")
     style.set("bibliographyStyleHasBeenSet", "0")
@@ -614,9 +651,10 @@ def patch_zotero_document_preferences(
     *,
     document_language: str | None,
     style_id: str | None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Keep Zotero Refresh on an English CSL style for English exports."""
-    if not is_english_document_language(document_language):
+    if not force and not is_english_document_language(document_language):
         return {"patched": False, "reason": "non-English document"}
     target_style = normalize_zotero_style_id(style_id)
     if custom_root is None:
@@ -642,8 +680,8 @@ def patch_zotero_document_preferences(
     style = preferences.find("style")
     if style is None:
         style = etree.SubElement(preferences, "style")
-    style.set("id", f"http://www.zotero.org/styles/{target_style}")
-    style.set("locale", "en-US")
+    style.set("id", zotero_style_uri(target_style))
+    style.set("locale", "en-US" if is_english_document_language(document_language) else "zh-CN")
     style.set("hasBibliography", "1")
     style.set("bibliographyStyleHasBeenSet", "0")
     prefs = preferences.find("prefs")
@@ -1129,10 +1167,6 @@ def normalize_paragraph_text(
             remove = True
         elif prev_char.isdigit() and UNIT_RE.match(tail):
             remove = False
-        elif (is_cjk(prev_char) and (is_latinlike(next_char) or next_char.isdigit())):
-            remove = True
-        elif ((is_latinlike(prev_char) or prev_char.isdigit()) and is_cjk(next_char)):
-            remove = True
         elif is_cjk(prev_char) and is_cjk(next_char):
             remove = True
 
@@ -1342,6 +1376,15 @@ def inject_metadata(text: str) -> str:
                     for line in frontmatter
                 ):
                     additions.append("zotero-client: zotero")
+                if not any(
+                    re.match(
+                        r"^\s*zotero[-_]author[-_]in[-_]text\s*:",
+                        line,
+                        flags=re.IGNORECASE,
+                    )
+                    for line in frontmatter
+                ):
+                    additions.append("zotero-author-in-text: true")
                 is_english = any(
                     re.match(
                         r"^\s*lang\s*:\s*[\"']?en(?:[-_][A-Za-z0-9]+)?",
@@ -1369,6 +1412,7 @@ def inject_metadata(text: str) -> str:
         "---\n"
         "linkReferences: true\n"
         "zotero-client: zotero\n"
+        "zotero-author-in-text: true\n"
         "---\n\n"
         + text
     )
@@ -1392,11 +1436,13 @@ def visible_markdown_heading(text: str) -> str:
 def suppress_frontmatter_title_when_h1_exists(
     text: str,
 ) -> tuple[str, str, bool]:
-    """Keep the body H1 as the sole exported title.
+    """Keep one meaningful document title in the temporary export copy.
 
     Obsidian's frontmatter title remains untouched in the source file. Only
     the temporary export copy drops the scalar ``title:`` entry when a body H1
     exists, preventing Pandoc from emitting both a metadata title and the H1.
+    If the first H1 is an abstract heading, promote the metadata title to the
+    document H1 and retain the abstract heading as a section heading.
     """
     lines = text.splitlines()
     frontmatter_end: int | None = None
@@ -1409,10 +1455,13 @@ def suppress_frontmatter_title_when_h1_exists(
                 break
 
     document_title = ""
-    for line in lines[body_start:]:
+    heading_index: int | None = None
+    for index in range(body_start, len(lines)):
+        line = lines[index]
         match = re.match(r"^\s*#\s+(.+?)\s*$", line)
         if match:
             document_title = visible_markdown_heading(match.group(1))
+            heading_index = index
             break
     metadata_title = ""
     if frontmatter_end is not None:
@@ -1430,6 +1479,21 @@ def suppress_frontmatter_title_when_h1_exists(
     if frontmatter_end is None:
         return text, document_title, False
 
+    if (
+        heading_index is not None
+        and document_title.casefold() in {"摘要", "abstract"}
+        and metadata_title
+    ):
+        section_heading = re.sub(
+            r"^(\s*)#(\s+)", r"\1##\2", lines[heading_index], count=1
+        )
+        lines[heading_index : heading_index + 1] = [
+            f"# {metadata_title}",
+            "",
+            section_heading,
+        ]
+        document_title = metadata_title
+
     removed = False
     for index in range(1, frontmatter_end):
         if re.match(r"^\s*title\s*:", lines[index], flags=re.IGNORECASE):
@@ -1440,24 +1504,13 @@ def suppress_frontmatter_title_when_h1_exists(
     return "\n".join(lines) + suffix, document_title, removed
 
 
-def count_markdown_note_paragraphs(text: str) -> int:
-    lines = text.splitlines()
-    in_frontmatter = bool(lines and lines[0].strip() == "---")
-    in_fence = False
-    count = 0
-    for index, line in enumerate(lines):
-        if index == 0 and in_frontmatter:
-            continue
-        if in_frontmatter:
-            if line.strip() == "---":
-                in_frontmatter = False
-            continue
-        if re.match(r"^\s*(```+|~~~+)", line):
-            in_fence = not in_fence
-            continue
-        if not in_fence and is_note_paragraph_text(line):
-            count += 1
-    return count
+def count_ast_note_paragraphs(ast: dict[str, Any]) -> int:
+    return sum(
+        1
+        for node in walk_ast(ast)
+        if node.get("t") in {"Para", "Plain"}
+        and is_note_paragraph_text(stringify_inlines(node.get("c", [])))
+    )
 
 
 def convert_obsidian_image_embeds(text: str) -> str:
@@ -1472,63 +1525,6 @@ def convert_obsidian_image_embeds(text: str) -> str:
         return f"![]({target}){attr}"
 
     return pattern.sub(replace, text)
-
-
-def normalize_markdown_image_spacing(text: str) -> tuple[str, int]:
-    """Isolate standalone images in the temporary export copy.
-
-    Pandoc needs paragraph boundaries to create figures with visible captions.
-    Preserve existing blank lines and skip metadata, code and display math.
-    """
-    lines = text.splitlines()
-    image_lines: set[int] = set()
-    fence_char = ""
-    fence_length = 0
-    in_math = False
-    in_metadata = bool(lines and lines[0].strip() == "---")
-    image_pattern = re.compile(
-        r"^ {0,3}!\[.*\]\(.+\)(?:[ \t]*\{[^}]*\})?[ \t]*$"
-    )
-    for index, line in enumerate(lines):
-        if in_metadata:
-            if index and line.strip() in {"---", "..."}:
-                in_metadata = False
-            continue
-        if fence_char:
-            if re.fullmatch(
-                rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*",
-                line,
-            ):
-                fence_char = ""
-            continue
-        if line.strip() == "$$":
-            in_math = not in_math
-            continue
-        if in_math:
-            continue
-        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-        if fence:
-            fence_char = fence.group(1)[0]
-            fence_length = len(fence.group(1))
-            continue
-        if image_pattern.fullmatch(line):
-            image_lines.add(index)
-
-    output: list[str] = []
-    changes = 0
-    for index, line in enumerate(lines):
-        # Insert once per boundary, including between two adjacent images.
-        if (
-            index
-            and (index in image_lines or index - 1 in image_lines)
-            and lines[index - 1].strip()
-            and line.strip()
-        ):
-            output.append("")
-            changes += 1
-        output.append(line)
-    newline = "\r\n" if "\r\n" in text else "\n"
-    return newline.join(output) + (newline if text.endswith("\n") else ""), changes
 
 
 def normalize_markdown_citation_spacing(text: str) -> tuple[str, int]:
@@ -1551,7 +1547,12 @@ def normalize_markdown_citation_spacing(text: str) -> tuple[str, int]:
             output.append(line)
             continue
         line, before_count = re.subn(
-            r"(?<=\S)[ \t]+(?=\[@[^\]\r\n]+\])",
+            r"(?<=[\u3400-\u9fff，。；：？！、])[ \t]+(?=\[@[^\]\r\n]+\])",
+            "",
+            line,
+        )
+        line, marked_before_count = re.subn(
+            r"(?<=[\u3400-\u9fff，。；：？！、])[ \t]+(?=\[\[@[^\]\r\n]+\]\]\{\.mark\})",
             "",
             line,
         )
@@ -1560,7 +1561,7 @@ def normalize_markdown_citation_spacing(text: str) -> tuple[str, int]:
             r"\1",
             line,
         )
-        changes += before_count + after_count
+        changes += before_count + marked_before_count + after_count
         output.append(line)
     return "\n".join(output) + ("\n" if text.endswith("\n") else ""), changes
 
@@ -1651,7 +1652,7 @@ def normalize_html_mark_highlights(text: str) -> tuple[str, int]:
         content = match.group("content")
         color = css_mark_background_color(match.group("attributes"))
         if color is None:
-            return f"=={content}=="
+            return f"[{content}]{{.mark}}"
         return (
             f"[{content}]"
             f'{{custom-style="{custom_mark_style_id(color)}"}}'
@@ -1668,6 +1669,90 @@ def normalize_html_mark_highlights(text: str) -> tuple[str, int]:
         line, line_changes = mark_pattern.subn(replace_mark, line)
         changes += line_changes
         output.append(line)
+    return "\n".join(output) + ("\n" if text.endswith("\n") else ""), changes
+
+
+def normalize_markdown_highlights(text: str) -> tuple[str, int]:
+    """Convert Markdown ``==...==`` marks to nestable Pandoc spans.
+
+    Pandoc's mark delimiter parser leaves literal delimiters behind when
+    marked text contains a custom HTML-derived span. Bracketed spans support
+    the same mark class while allowing nested custom colors. Delimiters inside
+    fenced code, inline code, or TeX math are left untouched.
+    """
+    lines = text.splitlines()
+    in_fence = False
+    output: list[str] = []
+    changes = 0
+    fence_pattern = re.compile(r"^\s*(```+|~~~+)")
+
+    for line in lines:
+        if fence_pattern.match(line):
+            in_fence = not in_fence
+            output.append(line)
+            continue
+        if in_fence:
+            output.append(line)
+            continue
+
+        delimiters: list[int] = []
+        index = 0
+        code_ticks = 0
+        math_dollars = 0
+        while index < len(line):
+            if line[index] == "`":
+                end = index + 1
+                while end < len(line) and line[end] == "`":
+                    end += 1
+                run_length = end - index
+                if code_ticks == 0:
+                    code_ticks = run_length
+                elif code_ticks == run_length:
+                    code_ticks = 0
+                index = end
+                continue
+            if code_ticks:
+                index += 1
+                continue
+            if line[index] == "$":
+                end = index + 1
+                while end < len(line) and line[end] == "$":
+                    end += 1
+                run_length = end - index
+                if math_dollars == 0:
+                    math_dollars = run_length
+                elif math_dollars == run_length:
+                    math_dollars = 0
+                index = end
+                continue
+            if not math_dollars and line.startswith("==", index):
+                delimiters.append(index)
+                index += 2
+                continue
+            index += 1
+
+        if len(delimiters) % 2:
+            output.append(line)
+            continue
+
+        if not delimiters:
+            output.append(line)
+            continue
+
+        pieces: list[str] = []
+        cursor = 0
+        for delimiter_index in range(0, len(delimiters), 2):
+            opening = delimiters[delimiter_index]
+            closing = delimiters[delimiter_index + 1]
+            pieces.append(line[cursor:opening])
+            pieces.append("[")
+            pieces.append(line[opening + 2:closing])
+            pieces.append("]{.mark}")
+            cursor = closing + 2
+        pieces.append(line[cursor:])
+        output.append("".join(pieces))
+        changes += len(delimiters)
+
     return "\n".join(output) + ("\n" if text.endswith("\n") else ""), changes
 
 
@@ -1783,11 +1868,11 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
     prepared, document_title, frontmatter_title_suppressed = (
         suppress_frontmatter_title_when_h1_exists(source)
     )
-    note_paragraphs = count_markdown_note_paragraphs(prepared)
     prepared = inject_metadata(prepared)
     prepared = convert_obsidian_image_embeds(prepared)
     prepared, image_space_changes = normalize_markdown_image_spacing(prepared)
     prepared, html_mark_changes = normalize_html_mark_highlights(prepared)
+    prepared, markdown_mark_changes = normalize_markdown_highlights(prepared)
     prepared, citation_space_changes = normalize_markdown_citation_spacing(
         prepared
     )
@@ -1799,9 +1884,9 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
         "citation_space_changes": citation_space_changes,
         "image_space_changes": image_space_changes,
         "html_mark_changes": html_mark_changes,
+        "markdown_mark_changes": markdown_mark_changes,
         "document_title": document_title,
         "frontmatter_title_suppressed": frontmatter_title_suppressed,
-        "note_paragraphs": note_paragraphs,
     }
 
 
@@ -1815,27 +1900,71 @@ def walk_ast(node: Any) -> Iterable[dict[str, Any]]:
             yield from walk_ast(value)
 
 
-def highlighted_plain_text_length(node: Any) -> int:
-    """Count text that the DOCX writer can carry inside w:highlight.
+def visible_highlight_inventory(
+    ast: dict[str, Any],
+) -> tuple[int, Counter[str]]:
+    """Count rendered, non-whitespace characters under effective marks.
 
-    Zotero citations become raw Word fields and equations become OMML, so they
-    do not inherit a surrounding Pandoc mark span.  Excluding those structured
-    nodes keeps the validation focused on ordinary visible prose.
+    Nested Pandoc spans style a text run once; citations, math, images, code,
+    and raw OpenXML do not become ordinary marked Word text. Whitespace is
+    omitted because the DOCX typography pass may normalize it without
+    changing the highlighted content.
     """
-    if isinstance(node, list):
-        return sum(highlighted_plain_text_length(value) for value in node)
-    if not isinstance(node, dict):
-        return 0
-    kind = node.get("t")
-    if kind in {"Cite", "Math", "RawInline", "Code"}:
-        return 0
-    if kind == "Str":
-        return len(str(node.get("c", "")))
-    if kind in {"Space", "SoftBreak", "LineBreak"}:
-        return 1
-    return sum(
-        highlighted_plain_text_length(value) for value in node.values()
-    )
+    mark_count = 0
+    custom_counts: Counter[str] = Counter()
+    excluded = {"Cite", "Code", "Image", "Math", "RawInline"}
+
+    def visit(
+        node: Any,
+        *,
+        marked: bool = False,
+        custom_color: str | None = None,
+    ) -> None:
+        nonlocal mark_count
+        if isinstance(node, list):
+            for value in node:
+                visit(value, marked=marked, custom_color=custom_color)
+            return
+        if not isinstance(node, dict):
+            return
+        kind = node.get("t")
+        if kind in excluded:
+            return
+        content = node.get("c")
+        if kind == "Span" and isinstance(content, list) and len(content) == 2:
+            attributes = content[0]
+            classes = attributes[1] if isinstance(attributes, list) else []
+            key_values = (
+                dict(attributes[2])
+                if isinstance(attributes, list) and len(attributes) > 2
+                else {}
+            )
+            own_color = custom_mark_color_from_style_id(
+                key_values.get("custom-style", "")
+            )
+            visit(
+                content[1],
+                marked=marked or "mark" in classes,
+                custom_color=own_color or custom_color,
+            )
+            return
+        if kind == "Str":
+            length = sum(
+                not character.isspace()
+                for character in str(content or "")
+            )
+            if marked:
+                mark_count += length
+            if custom_color:
+                custom_counts[custom_color] += length
+            return
+        if kind in {"Space", "SoftBreak", "LineBreak"}:
+            return
+        if isinstance(content, (list, dict)):
+            visit(content, marked=marked, custom_color=custom_color)
+
+    visit(ast.get("blocks", []))
+    return mark_count, custom_counts
 
 
 def pandoc_ast(
@@ -1871,6 +2000,86 @@ def pandoc_ast(
     return json.loads(result.stdout)
 
 
+def load_citekey_aliases(ast: dict[str, Any]) -> dict[str, str]:
+    """Read document-local Zotero citekey aliases from Pandoc metadata."""
+    meta = ast.get("meta", {})
+    entry = meta.get("zotero-citekey-aliases")
+    if entry is None:
+        return {}
+    if (
+        not isinstance(entry, dict)
+        or entry.get("t") != "MetaMap"
+        or not isinstance(entry.get("c"), dict)
+    ):
+        raise ExportError(
+            "zotero-citekey-aliases 必须是 YAML 映射：旧键: 文献库现有键"
+        )
+
+    aliases: dict[str, str] = {}
+    for source, value in entry["c"].items():
+        if not isinstance(source, str) or not source.strip():
+            raise ExportError("zotero-citekey-aliases 中存在空旧键")
+        if not isinstance(value, dict):
+            raise ExportError(
+                f"zotero-citekey-aliases 中 @{source} 的目标键格式无效"
+            )
+        if value.get("t") == "MetaString":
+            target = value.get("c")
+        elif value.get("t") == "MetaInlines":
+            inlines = value.get("c", [])
+            target = (
+                inlines[0].get("c")
+                if len(inlines) == 1 and inlines[0].get("t") == "Str"
+                else None
+            )
+        else:
+            target = None
+        if not isinstance(target, str) or not target.strip():
+            raise ExportError(
+                f"zotero-citekey-aliases 中 @{source} 的目标键必须是纯字符串"
+            )
+        if source == target:
+            raise ExportError(f"zotero-citekey-aliases 中 @{source} 指向自身")
+        if re.match(r"^(?:fig|tbl|eq):", source, re.IGNORECASE) or re.match(
+            r"^(?:fig|tbl|eq):", target, re.IGNORECASE
+        ):
+            raise ExportError("图、表和公式交叉引用不能设置为 Zotero citekey 别名")
+        aliases[source] = target
+
+    resolved: dict[str, str] = {}
+    for source in aliases:
+        target = aliases[source]
+        seen = {source}
+        while target in aliases:
+            if target in seen:
+                raise ExportError(
+                    f"zotero-citekey-aliases 存在循环映射：@{source}"
+                )
+            seen.add(target)
+            target = aliases[target]
+        resolved[source] = target
+    return resolved
+
+
+def apply_citekey_aliases(
+    ast: dict[str, Any], aliases: dict[str, str]
+) -> dict[str, str]:
+    """Map only Zotero citation IDs in the export AST; leave Markdown intact."""
+    used: dict[str, str] = {}
+    if not aliases:
+        return used
+    for node in walk_ast(ast):
+        if node.get("t") != "Cite":
+            continue
+        for citation in node.get("c", [[], []])[0]:
+            source = citation.get("citationId", "")
+            if source in aliases:
+                citation["citationId"] = aliases[source]
+                used[source] = aliases[source]
+    ast.get("meta", {}).pop("zotero-citekey-aliases", None)
+    return used
+
+
 def _dedupe_figure_alt_cites(node: Any) -> None:
     # pandoc Figure 节点: c = [attr, caption, blocks]
     # caption 与内部 Image 的 alt 各含同一份 inline(含 Cite),遍历
@@ -1901,18 +2110,86 @@ def _dedupe_figure_alt_cites(node: Any) -> None:
             _dedupe_figure_alt_cites(v)
 
 
+def normalize_markdown_image_spacing(text: str) -> tuple[str, int]:
+    """Isolate standalone images in the temporary export copy.
+
+    Pandoc needs paragraph boundaries to create figures with visible captions.
+    Preserve existing blank lines and skip metadata, code and display math.
+    """
+    lines = text.splitlines()
+    image_lines: set[int] = set()
+    fence_char = ""
+    fence_length = 0
+    in_math = False
+    in_metadata = bool(lines and lines[0].strip() == "---")
+    image_pattern = re.compile(
+        r"^ {0,3}!\[.*\]\(.+\)(?:[ \t]*\{[^}]*\})?[ \t]*$"
+    )
+    for index, line in enumerate(lines):
+        if in_metadata:
+            if index and line.strip() in {"---", "..."}:
+                in_metadata = False
+            continue
+        if fence_char:
+            if re.fullmatch(
+                rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*",
+                line,
+            ):
+                fence_char = ""
+            continue
+        if line.strip() == "$$":
+            in_math = not in_math
+            continue
+        if in_math:
+            continue
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            fence_char = fence.group(1)[0]
+            fence_length = len(fence.group(1))
+            continue
+        if image_pattern.fullmatch(line):
+            image_lines.add(index)
+
+    attached_attributes = {
+        index + 1 for index in image_lines
+        if index + 1 < len(lines)
+        and re.fullmatch(r"[ \t]*\{#fig:[^{}\s]+(?:[ \t]+[^{}]*)?\}[ \t]*", lines[index + 1])
+        and lines[index].rstrip().endswith(")")
+    }
+    output: list[str] = []
+    changes = 0
+    for index, line in enumerate(lines):
+        if index in attached_attributes:
+            continue
+        if index + 1 in attached_attributes:
+            line = line.rstrip() + lines[index + 1].strip()
+            changes += 1
+        # Insert once per boundary, including between two adjacent images.
+        if (
+            index
+            and (index in image_lines or index - 1 in image_lines
+                 or index - 1 in attached_attributes)
+            and lines[index - 1].strip()
+            and line.strip()
+        ):
+            output.append("")
+            changes += 1
+        output.append(line)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    return newline.join(output) + (newline if text.endswith("\n") else ""), changes
+
+
 def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
-    import copy
     ast = copy.deepcopy(ast)
     _dedupe_figure_alt_cites(ast)
     citation_clusters = 0
+    author_in_text_clusters = 0
     citekeys: list[str] = []
     image_targets: list[str] = []
     math_count = 0
     display_math_count = 0
     table_count = 0
-    highlight_chars = 0
-    custom_highlight_chars: Counter[str] = Counter()
+    highlight_chars, custom_highlight_chars = visible_highlight_inventory(ast)
     headers: list[str] = []
 
     for node in walk_ast(ast):
@@ -1934,6 +2211,11 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
             ]
             if zotero_citations:
                 citation_clusters += 1
+                if any(
+                    citation.get("citationMode", {}).get("t") == "AuthorInText"
+                    for citation in zotero_citations
+                ):
+                    author_in_text_clusters += 1
                 for citation in zotero_citations:
                     citekeys.append(citation["citationId"])
         elif kind == "Image":
@@ -1945,18 +2227,6 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
                 display_math_count += 1
         elif kind == "Table":
             table_count += 1
-        elif kind == "Span":
-            attributes = content[0]
-            if "mark" in attributes[1]:
-                highlight_chars += highlighted_plain_text_length(content[1])
-            key_values = dict(attributes[2])
-            custom_color = custom_mark_color_from_style_id(
-                key_values.get("custom-style", "")
-            )
-            if custom_color is not None:
-                custom_highlight_chars[custom_color] += (
-                    highlighted_plain_text_length(content[1])
-                )
         elif kind == "Header":
             level = content[0]
             text = stringify_inlines(content[2])
@@ -1964,6 +2234,7 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "citation_clusters": citation_clusters,
+        "author_in_text_clusters": author_in_text_clusters,
         "citekeys": sorted(set(citekeys)),
         "image_targets": image_targets,
         "math_count": math_count,
@@ -2194,6 +2465,16 @@ def check_images(
     return resolved, missing
 
 
+_DIRECT_BBT_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({})
+)
+
+
+def _open_bbt_url(url: str, *, timeout: float = 12.0):
+    """Reach Better BibTeX on loopback without using configured HTTP proxies."""
+    return _DIRECT_BBT_OPENER.open(url, timeout=timeout)
+
+
 def bbt_fetch_chunk(citekeys: list[str]) -> dict[str, Any]:
     request = {
         "jsonrpc": "2.0",
@@ -2212,7 +2493,7 @@ def bbt_fetch_chunk(citekeys: list[str]) -> dict[str, Any]:
         "http://127.0.0.1:23119/better-bibtex/json-rpc?" + encoded
     )
     try:
-        with urllib.request.urlopen(url, timeout=12) as response:
+        with _open_bbt_url(url, timeout=12) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         raise ExportError(
@@ -2269,7 +2550,7 @@ def bbt_search(citekey: str) -> list[dict[str, Any]]:
     )
     url = "http://127.0.0.1:23119/better-bibtex/json-rpc?" + encoded
     try:
-        with urllib.request.urlopen(url, timeout=12) as response:
+        with _open_bbt_url(url, timeout=12) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         raise ExportError(
@@ -3239,7 +3520,7 @@ def role_for_paragraph(
         style_id = pstyle.get(W("val")) if pstyle is not None else None
     name = style_names.get(style_id, "")
     text = paragraph_text(paragraph)
-    if text == "参考文献":
+    if text in {"参考文献", "References"}:
         return "reference_heading"
     normalized_name = re.sub(r"\s+", "", name).lower()
     if name.lower() in {"heading 1", "title", "标题 1", "标题1"}:
@@ -3248,7 +3529,7 @@ def role_for_paragraph(
         return "heading2"
     if normalized_name in {"heading3", "标题3"}:
         return "heading3"
-    if normalized_name in {"heading4", "标题4"}:
+    if re.fullmatch(r"(?:heading|标题)[4-9]", normalized_name):
         return "heading4"
     if name == "Image Caption":
         return "image_caption"
@@ -3290,6 +3571,36 @@ def is_transparent_body_marker(element: etree._Element) -> bool:
         "permEnd",
         "proofErr",
     }
+
+
+def fit_figure_caption_clusters(document_root, *, styles, format_config):
+    """Fit tall images with their rendered captions within printable height."""
+    body = document_root.find(W("body"))
+    if body is None:
+        return {}
+    children = list(body)
+    names = {value: key for key, value in styles.items()}
+    report = Counter()
+    for index, paragraph in enumerate(children):
+        if paragraph.tag != W("p") or not paragraph.xpath(".//wp:inline", namespaces=NS):
+            continue
+        end = figure_cluster_end(children, index, names)
+        captions = [item for item in children[index + 1:end] if item.tag == W("p")]
+        if not captions:
+            continue
+        caption_height = sum(estimated_paragraph_height_dxa(
+            item, max_width_dxa=content_width_dxa(format_config),
+            format_config=format_config) for item in captions)
+        # Allow one extra caption line for Word's font metrics and line wrapping.
+        reserve = caption_height + line_twips(float(format_config["caption_line_spacing"]))
+        reserve += paragraph_spacing_value(paragraph, "before", 0)
+        reserve += paragraph_spacing_value(paragraph, "after", 0)
+        maximum = max(1440, content_height_dxa(format_config) - reserve)
+        report.update(resize_inline_images(
+            paragraph, max_width_emu=content_width_emu(format_config),
+            max_height_emu=maximum * 635))
+        set_on_off(get_or_add(paragraph, W("pPr")), "keepNext", True)
+    return dict(report)
 
 
 def figure_cluster_start(
@@ -3608,6 +3919,7 @@ def format_body_paragraphs(
     *,
     styles: dict[str, str],
     format_config: dict[str, Any],
+    document_title: str | None = None,
 ) -> dict[str, int]:
     id_to_name = {value: key for key, value in styles.items()}
     ids = {
@@ -3666,6 +3978,9 @@ def format_body_paragraphs(
             and re.sub(r"\s+", "", style_name).lower()
             not in {"heading2", "标题2"},
         )
+        if role == "title" and (counts["title"] or (
+                document_title is not None and text != document_title)):
+            role = "heading2"
         counts[role] += 1
 
         if role == "title":
@@ -3709,7 +4024,8 @@ def format_body_paragraphs(
             )
             size = float(format_config["heading3_size_pt"])
         elif role == "heading4":
-            set_paragraph_style(paragraph, ids["heading4"])
+            set_paragraph_style(paragraph, style_id if re.fullmatch(
+                r"(?:heading|标题)[5-9]", re.sub(r"\s+", "", style_name).lower()) else ids["heading4"])
             set_paragraph_format(
                 paragraph,
                 alignment="left",
@@ -3801,6 +4117,11 @@ def format_body_paragraphs(
             )
             size = float(format_config["body_size_pt"])
 
+        if role in {"title", "heading2", "heading3", "heading4", "reference_heading"}:
+            indent = get_or_add(get_or_add(paragraph, W("pPr")), W("ind"))
+            for attribute in ("left", "right", "leftChars", "rightChars"):
+                indent.set(W(attribute), "0")
+
         # OMML content uses m:t rather than w:t, so ordinary prose around an
         # inline formula can be normalized without touching the formula.
         skip_cleanup = role in {"reference_heading"}
@@ -3817,6 +4138,207 @@ def format_body_paragraphs(
                 )
     return dict(counts)
 
+
+def patch_crossref_number_spacing(document, document_language):
+    """Use ordinary halfwidth spaces around generated figure/table references."""
+    separator = " "
+    for link in document.xpath(".//w:hyperlink[@w:anchor]", namespaces=NS):
+        anchor = link.get(W("anchor"), "")
+        if not re.match(r"^(?:fig|tbl|eq):", anchor):
+            continue
+        previous = link.getprevious()
+        whitespace_nodes = []
+        while previous is not None:
+            nodes = []
+            for node in reversed(previous.xpath(".//w:t", namespaces=NS)):
+                if not node.text:
+                    continue
+                if node.text.isspace():
+                    whitespace_nodes.append(node)
+                else:
+                    nodes.append(node)
+                    break
+            if nodes:
+                node = nodes[-1]
+                pattern = r"((?:图|表|式|Fig\.?|Figure|Table|Equation)s?)[\s\u3000]*$"
+                if re.search(pattern, node.text):
+                    node.text = re.sub(pattern, lambda match: match.group(1) + separator, node.text)
+                    node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                    for whitespace in whitespace_nodes:
+                        whitespace.text = ""
+                break
+            previous = previous.getprevious()
+    for paragraph in document.xpath(".//w:body/w:p", namespaces=NS):
+        nodes = [node for node in paragraph.xpath("./w:r/w:t", namespaces=NS) if node.text]
+        if nodes:
+            nodes[0].text = re.sub(r"^(图|表)[\s\u3000]*(?=\d)",
+                                   lambda match: match.group(1) + separator, nodes[0].text)
+
+
+def render_csl_multilingual(pandoc, csl_path, language, references, clusters):
+    """Use citeproc-js for CSL-M layouts without changing the user's style."""
+    runner = Path(__file__).with_name("render_csl.cjs")
+    node = os.environ.get("MD_EXPORT_WORD_NODE") or shutil.which("node")
+    if not node or not runner.is_file():
+        raise ExportError("双语引用处理器未安装完整，请更新 MD Export Word 运行时")
+    payload = {"style":Path(csl_path).read_text(encoding="utf-8-sig"),
+               "language":language,"references":list(references.values()),"clusters":clusters}
+    environment = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+    rendered = subprocess.run([node,str(runner)],input=json.dumps(payload,ensure_ascii=False),
+        text=True,encoding="utf-8",capture_output=True,env=environment,timeout=90)
+    if rendered.returncode:
+        raise ExportError("双语引用处理失败：" + rendered.stderr[-1500:])
+    result = json.loads(rendered.stdout)
+    html = "".join(f'<div id="md-csl-citation-{i}"><p>{entry}</p></div>'
+        for i,entry in enumerate(result["citations"]))
+    html += "".join(f'<div id="md-csl-bibliography-{i}">{entry}</div>'
+        for i,entry in enumerate(result["bibliography"]))
+    parsed = subprocess.run([str(pandoc),"--from=html","--to=json"],input=html,
+        text=True,encoding="utf-8",capture_output=True)
+    if parsed.returncode:
+        raise ExportError("无法解析双语引用格式：" + parsed.stderr)
+    entries = {}
+    for block in walk_ast(json.loads(parsed.stdout).get("blocks", [])):
+        if block.get("t") == "Div" and block["c"][0][0].startswith("md-csl-"):
+            entries[block["c"][0][0]] = [inline for paragraph in walk_ast(block["c"][1])
+                if paragraph.get("t") in {"Para","Plain"} for inline in paragraph["c"]]
+    citations = [entries.get(f"md-csl-citation-{i}",[]) for i in range(len(clusters))]
+    bibliography = [entries.get(f"md-csl-bibliography-{i}",[]) for i in range(len(result["bibliography"]))]
+    if any(not entry for entry in citations + bibliography):
+        raise ExportError("双语引用或参考文献结果不完整")
+    return {"citations":citations,"bibliography":bibliography}
+
+
+def render_zotero_results(raw_docx, pandoc, csl_path, language, temp_dir):
+    """Render initial field results from the embedded Zotero CSL records."""
+    with ZipFile(raw_docx) as archive:
+        document = etree.fromstring(archive.read("word/document.xml"))
+    fields = [field for field in field_inventory(document) if "ZOTERO_ITEM" in field["code"]]
+    if not fields:
+        return {"citations": [], "bibliography": []}
+    references, blocks, clusters = {}, [], []
+    for field in fields:
+        marker = re.search(r"CSL_CITATION\s+", field["code"])
+        data, _ = json.JSONDecoder().raw_decode(field["code"][marker.end():].lstrip())
+        citations, cluster = [], []
+        for item in data["citationItems"]:
+            key = "zotero-" + str(item["id"])
+            reference = copy.deepcopy(item["itemData"])
+            reference["id"] = key
+            references[key] = reference
+            cluster.append({**{name:item[name] for name in ("prefix","suffix","locator","label","suppress-author") if name in item},"id":key})
+            suffix = item.get("suffix", "")
+            if item.get("locator"):
+                label = {"page": "p.", "chapter": "chap.", "section": "sec."}.get(item.get("label", "page"), item.get("label", "p."))
+                suffix = label + " " + str(item["locator"]) + (" " + suffix if suffix else "")
+            citations.append({"citationId": key,
+                "citationPrefix": [{"t": "Str", "c": item["prefix"]}] if item.get("prefix") else [],
+                "citationSuffix": [{"t": "Str", "c": suffix}] if suffix else [],
+                "citationMode": {"t": "SuppressAuthor" if item.get("suppress-author") else "NormalCitation"},
+                "citationNoteNum": 0, "citationHash": 0})
+        blocks.append({"t": "Para", "c": [{"t": "Cite", "c": [citations, []]}]})
+        clusters.append(cluster)
+    api = json.loads(subprocess.check_output([str(pandoc), "--from=markdown", "--to=json"], input="", text=True, encoding="utf-8"))["pandoc-api-version"]
+    refs_path = temp_dir / "citation-records.json"
+    refs_path.write_text(json.dumps(list(references.values()), ensure_ascii=False), encoding="utf-8")
+    command = [str(pandoc), "--from=json", "--to=json", "--citeproc", "--bibliography=" + str(refs_path), "--metadata=lang:" + language]
+    if csl_path:
+        command.append("--csl=" + str(csl_path))
+    result = subprocess.run(command, input=json.dumps({"pandoc-api-version": api, "meta": {}, "blocks": blocks}),
+                            text=True, encoding="utf-8", capture_output=True)
+    if result.returncode:
+        if csl_path and "Multiple layout elements" in result.stderr:
+            return render_csl_multilingual(pandoc,csl_path,language,references,clusters)
+        raise ExportError("无法生成作者—年份及参考文献预览：" + result.stderr)
+    rendered = json.loads(result.stdout)
+    citations = [node["c"][1] for node in walk_ast(rendered.get("blocks", [])) if node.get("t") == "Cite"]
+    bibliography = []
+    for block in rendered.get("blocks", []):
+        if block.get("t") == "Div" and block["c"][0][0] == "refs":
+            for entry in block["c"][1]:
+                if entry.get("t") == "Div":
+                    paragraphs = [n["c"] for n in entry["c"][1] if n.get("t") in {"Para", "Plain"}]
+                    if paragraphs:
+                        bibliography.append(sum(paragraphs, []))
+    if len(citations) != len(fields) or not bibliography:
+        raise ExportError("作者—年份或参考文献渲染不完整，已停止导出")
+    return {"citations": citations, "bibliography": bibliography}
+
+
+def apply_zotero_results(document, results, format_config):
+    """Populate live Zotero fields without changing their IDs or citation items."""
+    if not results:
+        return
+    def runs(inlines, inherited=None, base_rpr=None):
+        output = []
+        for inline in inlines:
+            kind, content = inline.get("t"), inline.get("c")
+            properties = dict(inherited or {})
+            if kind in {"Emph", "Strong", "Superscript", "Subscript", "SmallCaps"}:
+                properties[kind] = True
+                output.extend(runs(content, properties, base_rpr)); continue
+            if kind == "Span":
+                output.extend(runs(content[1], properties, base_rpr)); continue
+            if kind == "Link":
+                output.extend(runs(content[1], properties, base_rpr)); continue
+            text = str(content) if kind == "Str" else " " if kind in {"Space", "SoftBreak", "LineBreak"} else ""
+            if not text:
+                continue
+            run = etree.Element(W("r"))
+            rpr = copy.deepcopy(base_rpr) if base_rpr is not None else etree.Element(W("rPr"))
+            run.append(rpr)
+            if base_rpr is None:
+                set_fonts(rpr, east_asia=str(format_config["east_asia_font"]), western=str(format_config["western_font"]))
+                set_size(rpr, float(format_config["body_size_pt"]))
+            for key, tag in [("Emph", "i"), ("Strong", "b"), ("SmallCaps", "smallCaps")]:
+                if properties.get(key): etree.SubElement(rpr, W(tag))
+            for key, value in [("Superscript", "superscript"), ("Subscript", "subscript")]:
+                if properties.get(key): etree.SubElement(rpr, W("vertAlign")).set(W("val"), value)
+            node = etree.SubElement(run, W("t")); node.text = text; node.set("{" + XML_NS + "}space", "preserve")
+            output.append(run)
+        return output
+    fields = [field for field in field_inventory(document) if "ZOTERO_ITEM" in field["code"]]
+    if len(fields) != len(results["citations"]):
+        raise ExportError("Zotero 引文域在格式处理后发生变化")
+    for field, inlines in zip(fields, results["citations"]):
+        old = field["result_nodes"]
+        if not old:
+            raise ExportError("Zotero 引文域缺少显示结果")
+        first_run = old[0].getparent(); parent = first_run.getparent(); index = parent.index(first_run)
+        for run in runs(inlines, base_rpr=first_run.find(W("rPr"))): parent.insert(index, run); index += 1
+        for node in old: node.text = ""
+        marker = re.search(r"CSL_CITATION\s+", field["code"])
+        data, _ = json.JSONDecoder().raw_decode(field["code"][marker.end():].lstrip())
+        data["properties"]["formattedCitation"] = stringify_inlines(inlines)
+        data["properties"]["plainCitation"] = stringify_inlines(inlines)
+        field["code_nodes"][0].text = " ADDIN ZOTERO_ITEM CSL_CITATION " + json.dumps(data, ensure_ascii=False)
+        for node in field["code_nodes"][1:]: node.text = ""
+    bib = next((f for f in field_inventory(document) if "ZOTERO_BIBL" in f["code"]), None)
+    if bib and results["bibliography"]:
+        original = bib["result_nodes"][0].getparent().getparent()
+        body = original.getparent(); index = body.index(original)
+        before, after, separated = [], [], False
+        for child in original:
+            if child.tag == W("pPr"): continue
+            if not separated:
+                before.append(copy.deepcopy(child))
+                if child.xpath("./w:fldChar[@w:fldCharType='separate']", namespaces=NS): separated = True
+            elif child.xpath("./w:fldChar[@w:fldCharType='end']", namespaces=NS): after.append(copy.deepcopy(child))
+        for i, inlines in enumerate(results["bibliography"]):
+            paragraph = etree.Element(W("p")); paragraph.append(copy.deepcopy(original.find(W("pPr"))))
+            if i == 0:
+                for child in before: paragraph.append(child)
+            for run in runs(inlines): paragraph.append(run)
+            if i == len(results["bibliography"]) - 1:
+                for child in after: paragraph.append(child)
+            body.insert(index+i, paragraph)
+        body.remove(original)
+    if is_english_document_language(format_config.get("document_language")):
+        for p in document.xpath("./w:body/w:p", namespaces=NS):
+            if paragraph_text(p) == "参考文献":
+                nodes = p.xpath(".//w:t", namespaces=NS)
+                nodes[0].text = "References"
+                for node in nodes[1:]: node.text = ""
 
 def patch_docx(
     raw_docx: Path,
@@ -3859,6 +4381,7 @@ def patch_docx(
             document,
             styles=styles,
             format_config=format_config,
+            document_title=source_inventory.get("document_title"),
         )
         zotero_parenthesis_report = (
             patch_english_zotero_citation_parentheses(
@@ -3873,6 +4396,7 @@ def patch_docx(
             custom_properties,
             document_language=source_inventory.get("document_language", ""),
             style_id=source_inventory.get("zotero_csl_style", "apa"),
+            force=source_inventory.get("citation_style_selected", False),
         )
         duplicate_image_captions_removed = (
             remove_redundant_generated_image_captions(
@@ -3935,11 +4459,6 @@ def patch_docx(
                 figure_image_max_height_dxa(format_config) * 635
             ),
         )
-        figure_reflow_report = reflow_large_figures(
-            document,
-            styles=styles,
-            format_config=format_config,
-        )
         quote_splits = split_quote_runs(
             document,
             format_config=format_config,
@@ -3954,6 +4473,18 @@ def patch_docx(
             styles_root,
             document,
         )
+        scripts_before_results = script_run_counts(document)
+        apply_zotero_results(document, source_inventory.get("citation_results"), format_config)
+        cluster_resize = fit_figure_caption_clusters(
+            document, styles=styles, format_config=format_config)
+        for key, value in cluster_resize.items():
+            image_resize_report[key] = image_resize_report.get(key, 0) + value
+        figure_reflow_report = reflow_large_figures(
+            document, styles=styles, format_config=format_config)
+        scripts_after_results = script_run_counts(document)
+        for key in raw_script_baseline:
+            raw_script_baseline[key] += scripts_after_results.get(key, 0) - scripts_before_results.get(key, 0)
+        patch_crossref_number_spacing(document, format_config.get("document_language", ""))
         patch_section(document, format_config=format_config)
         patch_settings(settings)
 
@@ -4050,6 +4581,31 @@ def field_code_counts(document: etree._Element) -> Counter:
             key = field["code"].split(maxsplit=1)[0] if field["code"] else ""
             counts[key or "(empty)"] += 1
     return counts
+
+
+def zotero_author_prefix_field_count(document: etree._Element) -> int:
+    count = 0
+    decoder = json.JSONDecoder()
+    for field in field_inventory(document):
+        code = field["code"]
+        if "ZOTERO_ITEM" not in code.upper():
+            continue
+        if not any("<Do Zotero Refresh" in (node.text or "") for node in field["result_nodes"]):
+            continue
+        marker = re.search(r"CSL_CITATION\s+", code, flags=re.IGNORECASE)
+        if marker is None:
+            continue
+        try:
+            citation, _ = decoder.raw_decode(code[marker.end():].lstrip())
+        except json.JSONDecodeError:
+            continue
+        if any(
+            item.get("suppress-author") is True
+            for item in citation.get("citationItems", [])
+            if isinstance(item, dict)
+        ):
+            count += 1
+    return count
 
 
 def script_run_counts(document: etree._Element) -> dict[str, int]:
@@ -4159,8 +4715,9 @@ def zotero_document_preference_issues(
     *,
     document_language: str | None,
     style_id: str | None,
+    force: bool = False,
 ) -> list[str]:
-    if not is_english_document_language(document_language):
+    if not force and not is_english_document_language(document_language):
         return []
     expected_style = normalize_zotero_style_id(style_id)
     if custom_root is None:
@@ -4173,15 +4730,16 @@ def zotero_document_preference_issues(
     except etree.XMLSyntaxError:
         return ["English Zotero document preferences are malformed"]
     style = preferences.find("style")
-    expected_uri = f"http://www.zotero.org/styles/{expected_style}"
+    expected_uri = zotero_style_uri(expected_style)
     issues: list[str] = []
     if style is None or style.get("id") != expected_uri:
         actual = style.get("id") if style is not None else "missing"
         issues.append(
             f"English Zotero style is {actual}, expected {expected_uri}"
         )
-    if style is None or style.get("locale") != "en-US":
-        issues.append("English Zotero style locale is not en-US")
+    locale = "en-US" if is_english_document_language(document_language) else "zh-CN"
+    if style is None or style.get("locale") != locale:
+        issues.append(f"Zotero style locale is not {locale}")
     field_types = [
         node.get("value")
         for node in preferences.xpath("./prefs/pref[@name='fieldType']")
@@ -4253,7 +4811,8 @@ def highlighted_character_count(document: etree._Element) -> int:
         ".//w:r[w:rPr/w:highlight[not(@w:val='none')]]",
         namespaces=NS,
     ):
-        count += run_visible_text_length(run)
+        text = "".join(run.xpath(".//w:t/text()", namespaces=NS))
+        count += sum(not character.isspace() for character in text)
     return count
 
 
@@ -4262,7 +4821,10 @@ def shaded_character_counts(document: etree._Element) -> dict[str, int]:
     for run in document.xpath(".//w:r[w:rPr/w:shd]", namespaces=NS):
         fill = run.xpath("string(./w:rPr/w:shd/@w:fill)", namespaces=NS)
         if re.fullmatch(r"[0-9A-Fa-f]{6}", fill or ""):
-            counts[fill.upper()] += run_visible_text_length(run)
+            text = "".join(run.xpath(".//w:t/text()", namespaces=NS))
+            counts[fill.upper()] += sum(
+                not character.isspace() for character in text
+            )
     return dict(sorted(counts.items()))
 
 
@@ -4338,6 +4900,7 @@ def validate_docx(
                     "document_language", ""
                 ),
                 style_id=source_inventory.get("zotero_csl_style", "apa"),
+                force=source_inventory.get("citation_style_selected", False),
             )
         )
         errors.extend(
@@ -4568,6 +5131,13 @@ def validate_docx(
             )
             if role == "picture" or not text_value:
                 continue
+            if role in {"heading2", "heading3", "heading4", "reference_heading"}:
+                if paragraph.xpath("string(w:pPr/w:jc/@w:val)", namespaces=NS) != "left":
+                    errors.append(f"章节标题未左对齐：{text_value}")
+                if paragraph.xpath("string(w:pPr/w:ind/@w:left)", namespaces=NS) != "0":
+                    errors.append(f"章节标题仍有左缩进：{text_value}")
+            if role == "title" and text_value != source_inventory.get("document_title", ""):
+                errors.append(f"章节标题被误识别为文章总标题：{text_value}")
             expected_size, expected_line = role_specs[role]
             expected_half_points = str(int(round(expected_size * 2)))
             run_nodes = paragraph.xpath(".//w:r[w:t]", namespaces=NS)
@@ -4828,11 +5398,11 @@ def validate_docx(
                     f"{format_config['table_size_pt']} pt"
                 )
 
+        # A space before a manual-refresh field is also legitimate in English
+        # prose and bilingual captions; it does not identify an author prefix.
+        # Citation field counts and payload checks below validate completeness.
         for paragraph in document.xpath(".//w:p", namespaces=NS):
             visible_text = paragraph_text(paragraph)
-            if re.search(r"\s+<Do Zotero Refresh", visible_text):
-                errors.append("存在 Zotero 引文前普通空格")
-                break
             if re.search(
                 r">\s+[\u3400-\u9fff，。；：？！、]", visible_text
             ):
@@ -5026,6 +5596,14 @@ def print_preflight(
     )
     print(f"公式编号：{equation_numbers or '无'}")
     print(f"Zotero 引文域：{inventory['citation_clusters']}")
+    if inventory.get("citekey_aliases"):
+        print(
+            "导出期 citekey 映射："
+            + "；".join(
+                f"@{source} → @{target}"
+                for source, target in inventory["citekey_aliases"].items()
+            )
+        )
     if inventory.get("missing_citekeys"):
         print(
             "缺失 citekey 占位符："
@@ -5077,6 +5655,11 @@ def run_pandoc(
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["PATH"] = str(crossref.parent) + os.pathsep + env.get("PATH", "")
+    # The Zotero Lua filter calls Better BibTeX at 127.0.0.1.  This Pandoc
+    # build's mediabag client does not honor NO_PROXY, so remove HTTP proxy
+    # variables for its loopback RPC while preserving HTTPS proxy settings.
+    for proxy_key in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        env.pop(proxy_key, None)
     result = subprocess.run(
         command,
         cwd=vault_root,
@@ -5260,14 +5843,35 @@ def main() -> int:
             cwd=vault_root,
             resource_path=resource_path,
         )
+        selected_csl = os.environ.get("MD_EXPORT_WORD_CSL", "").strip()
+        selected_style_id = ""
+        if selected_csl:
+            selected_path, selected_style_id = selected_csl_metadata(selected_csl, vault_root)
+            ast.setdefault("meta", {})["csl"] = {"t":"MetaString", "c":str(selected_path)}
+            ast["meta"]["zotero-csl-style"] = {"t":"MetaString", "c":selected_style_id}
+        else:
+            manuscript_csl = stringify_metadata(ast.get("meta", {}).get("csl"))
+            # Follow the manuscript's real CSL ID, not the injected APA fallback.
+            frontmatter = re.match(r"\A\ufeff?---\r?\n(.*?)\r?\n---", source, re.S)
+            explicit_style = bool(frontmatter and re.search(
+                r"^zotero[-_]csl[-_]style\s*:", frontmatter.group(1), re.M))
+            if manuscript_csl and not explicit_style and not re.match(r"^https?://", manuscript_csl):
+                _, selected_style_id = selected_csl_metadata(manuscript_csl, vault_root)
+                ast.setdefault("meta", {})["zotero-csl-style"] = {"t":"MetaString", "c":selected_style_id}
         inventory = ast_inventory(ast)
+        citekey_aliases = load_citekey_aliases(ast)
+        used_citekey_aliases = apply_citekey_aliases(ast, citekey_aliases)
+        if used_citekey_aliases:
+            inventory = ast_inventory(ast)
+            inventory["citekey_aliases"] = used_citekey_aliases
+        inventory["citation_style_selected"] = bool(selected_style_id)
+        inventory["note_paragraphs"] = count_ast_note_paragraphs(ast)
         format_config = language_aware_format_config(
             format_config,
             inventory.get("document_language", ""),
         )
         inventory["equation_numbers"] = prepare_report["equation_numbers"]
         inventory["document_title"] = prepare_report["document_title"]
-        inventory["note_paragraphs"] = prepare_report["note_paragraphs"]
         inventory["export_mode"] = export_mode
         image_paths, missing_images = check_images(
             inventory["image_targets"],
@@ -5316,6 +5920,13 @@ def main() -> int:
         inventory["unresolved_citation_clusters"] = unresolved_clusters
         pandoc_input = prepared_md
         pandoc_input_format = MARKDOWN_INPUT_FORMAT
+        if used_citekey_aliases:
+            pandoc_input = temp_dir / "prepared-citekey-aliases.json"
+            pandoc_input.write_text(
+                json.dumps(ast, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            pandoc_input_format = "json"
         inventory["expected_zotero_fields"] = inventory["citation_clusters"]
         if missing_keys:
             compatible_ast = split_missing_citations_in_ast(
@@ -5418,6 +6029,24 @@ def main() -> int:
             stage_key="progress.export.formatDocument",
             detail_key="progress.export.formatDocumentDetail",
         )
+        csl_value = stringify_metadata(ast.get("meta", {}).get("csl"))
+        csl_path = (vault_root / csl_value).resolve() if csl_value and not re.match(r"^https?://", csl_value) else csl_value
+        display_mode = os.environ.get("MD_EXPORT_WORD_CITATION_DISPLAY", "rendered")
+        if display_mode not in {"manual", "rendered"}:
+            raise ExportError(f"无效引用显示方式：{display_mode}")
+        if display_mode == "rendered":
+            render_override = os.environ.get("MD_EXPORT_WORD_CSL_RENDER", "").strip()
+            if render_override:
+                csl_path, _ = selected_csl_metadata(render_override, vault_root)
+            try:
+                inventory["citation_results"] = render_zotero_results(
+                    raw_docx, pandoc, csl_path, str(format_config.get("document_language", "zh-CN")), temp_dir
+                )
+            except ExportError as error:
+                # Zotero's multilingual CSL extensions are not all supported
+                # by Pandoc citeproc. Keep intact live fields for Word Refresh.
+                emit_progress(78, "引用改由 Word 中的 Zotero 刷新",
+                    str(error), level="warning", stage_key="progress.export.citationFallback")
         format_report = patch_docx(
             raw_docx,
             output_path,

@@ -15,3 +15,6 @@ __pycache__/
 .runtime-*
 .DS_Store
 Thumbs.db
+qa-local/
+本机更新记录.md
+scripts/qa-zotero-style-selection.py

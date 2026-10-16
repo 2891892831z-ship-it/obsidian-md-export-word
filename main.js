@@ -34,8 +34,8 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian2 = require("obsidian");
 var import_node_child_process = require("node:child_process");
-var fs2 = __toESM(require("node:fs"), 1);
-var path2 = __toESM(require("node:path"), 1);
+var fs3 = __toESM(require("node:fs"), 1);
+var path3 = __toESM(require("node:path"), 1);
 
 // src/runtime-install.ts
 var fs = __toESM(require("node:fs"), 1);
@@ -331,7 +331,7 @@ function validateOptions(options) {
   };
 }
 function requestOnce(url, signal, idleTimeoutMs) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     if (signal?.aborted) {
       reject(abortedError(url.href));
       return;
@@ -356,7 +356,7 @@ function requestOnce(url, signal, idleTimeoutMs) {
         }
         settled = true;
         cleanup();
-        resolve(response);
+        resolve2(response);
       }
     );
     const cleanup = () => {
@@ -573,7 +573,7 @@ function bufferedHttpStatusError(url, statusCode) {
   );
 }
 function runBufferedRequest(request3, url, headers, signal, timeoutMs) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     if (signal?.aborted) {
       reject(abortedError(url.href));
       return;
@@ -589,7 +589,7 @@ function runBufferedRequest(request3, url, headers, signal, timeoutMs) {
       }
       settled = true;
       cleanup();
-      resolve(response);
+      resolve2(response);
     };
     const fail = (error) => {
       if (settled) {
@@ -1243,10 +1243,10 @@ function waitForRetryDelay(delayMs, signal) {
   if (delayMs <= 0) {
     return Promise.resolve();
   }
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
-      resolve();
+      resolve2();
     }, delayMs);
     const onAbort = () => {
       clearTimeout(timer);
@@ -1373,6 +1373,10 @@ var en = {
   "format.bodySize.name": "Body font size",
   "format.bodyLineSpacing.name": "Body line spacing",
   "format.bodyIndent.name": "Body first-line indent",
+  "format.documentLanguage.name": "Manuscript language",
+  "format.documentLanguage.desc": "Defaults to the note's lang. English uses a two-halfwidth-character indent (1 em) and Times New Roman; Chinese uses two fullwidth characters (2 em). Body text is justified; settings remain editable.",
+  "format.documentLanguage.zhCN": "Chinese",
+  "format.documentLanguage.en": "English",
   "format.section.headings": "Title and headings",
   "format.titleSize.name": "Article title size (Markdown #)",
   "format.titleLineSpacing.name": "Article title line spacing",
@@ -1599,7 +1603,18 @@ var en = {
   "progress.recolor.complete": "Citation coloring complete",
   "progress.recolor.failed": "Citation coloring failed",
   "progress.recolor.cancelled": "Cancelled",
-  "progress.recolor.cancelledDetail": "The user cancelled citation coloring"
+  "progress.recolor.cancelledDetail": "The user cancelled citation coloring",
+  "format.citationStyle.name": "Citation style (Zotero)",
+  "format.citationStyle.desc": "Read styles installed in local Zotero for this export. Refresh and style changes remain available in Word.",
+  "format.citationStyle.empty": "No local Zotero styles found. Install styles and reload, or keep manuscript settings.",
+  "format.citationStyle.follow": "Use manuscript settings",
+  "format.citationStyle.refresh": "Reload styles",
+  "format.citationStyle.parentMissing": "The local parent style is missing. Use manual Word refresh, or reinstall this style in Zotero first.",
+  "format.citationDisplay.name": "Initial citation display",
+  "format.citationDisplay.desc": "Both modes preserve Zotero fields. Initial rendering falls back to Word Zotero Refresh for unsupported styles.",
+  "progress.export.citationFallback": "Refresh citations with Zotero in Word",
+  "format.citationDisplay.manual": "Refresh manually in Word",
+  "format.citationDisplay.rendered": "Render readable citations during export (default)"
 };
 
 // src/locales/zh-cn.ts
@@ -1682,6 +1697,10 @@ var zhCN = {
   "format.bodySize.name": "\u6B63\u6587\u5B57\u53F7",
   "format.bodyLineSpacing.name": "\u6B63\u6587\u884C\u8DDD",
   "format.bodyIndent.name": "\u6B63\u6587\u9996\u884C\u7F29\u8FDB",
+  "format.documentLanguage.name": "\u7A3F\u4EF6\u8BED\u8A00",
+  "format.documentLanguage.desc": "\u9ED8\u8BA4\u6CBF\u7528\u7B14\u8BB0 lang\uFF1B\u82F1\u6587\u7A3F\u9996\u884C\u7F29\u8FDB\u4E24\u4E2A\u534A\u89D2\u5B57\u7B26\u5BBD\uFF081 em\uFF09\u3001\u5168\u5B57\u4F53\u65B0\u7F57\u9A6C\uFF0C\u4E2D\u6587\u7A3F\u9996\u884C\u7F29\u8FDB\u4E24\u4E2A\u5168\u89D2\u5B57\u5BBD\uFF082 em\uFF09\u3002\u6B63\u6587\u5747\u4E24\u7AEF\u5BF9\u9F50\uFF0C\u53EF\u7EE7\u7EED\u8C03\u6574\u3002",
+  "format.documentLanguage.zhCN": "\u4E2D\u6587\u7A3F",
+  "format.documentLanguage.en": "\u82F1\u6587\u7A3F",
   "format.section.headings": "\u9898\u76EE\u4E0E\u6807\u9898",
   "format.titleSize.name": "\u6587\u7AE0\u9898\u76EE\u5B57\u53F7\uFF08Markdown #\uFF09",
   "format.titleLineSpacing.name": "\u6587\u7AE0\u9898\u76EE\u884C\u8DDD",
@@ -1908,7 +1927,18 @@ var zhCN = {
   "progress.recolor.complete": "\u5F15\u6587\u7740\u8272\u5B8C\u6210",
   "progress.recolor.failed": "\u5F15\u6587\u7740\u8272\u5931\u8D25",
   "progress.recolor.cancelled": "\u5DF2\u53D6\u6D88",
-  "progress.recolor.cancelledDetail": "\u7528\u6237\u4E2D\u6B62\u5F15\u6587\u7740\u8272"
+  "progress.recolor.cancelledDetail": "\u7528\u6237\u4E2D\u6B62\u5F15\u6587\u7740\u8272",
+  "format.citationStyle.name": "\u5F15\u7528\u6837\u5F0F\uFF08Zotero\uFF09",
+  "format.citationStyle.desc": "\u8BFB\u53D6\u672C\u673A Zotero \u5DF2\u5B89\u88C5\u6837\u5F0F\uFF0C\u4EC5\u7528\u4E8E\u672C\u6B21\u5BFC\u51FA\uFF1BWord \u4E2D\u4ECD\u53EF\u5237\u65B0\u548C\u66F4\u6362\u6837\u5F0F\u3002",
+  "format.citationStyle.empty": "\u672A\u627E\u5230\u672C\u673A Zotero \u6837\u5F0F\uFF1B\u53EF\u5B89\u88C5\u6837\u5F0F\u540E\u91CD\u65B0\u8BFB\u53D6\uFF0C\u6216\u6CBF\u7528\u7A3F\u4EF6\u8BBE\u7F6E\u3002",
+  "format.citationStyle.follow": "\u6CBF\u7528\u7A3F\u4EF6\u8BBE\u7F6E",
+  "format.citationStyle.refresh": "\u91CD\u65B0\u8BFB\u53D6",
+  "format.citationStyle.parentMissing": "\u6B64\u6837\u5F0F\u7F3A\u5C11\u672C\u673A\u7236\u6837\u5F0F\u3002\u8BF7\u6539\u7528 Word \u624B\u52A8\u5237\u65B0\uFF0C\u6216\u5148\u5728 Zotero \u4E2D\u91CD\u88C5\u8BE5\u6837\u5F0F\u3002",
+  "format.citationDisplay.name": "\u5F15\u7528\u521D\u59CB\u663E\u793A",
+  "format.citationDisplay.desc": "\u4E24\u79CD\u65B9\u5F0F\u5747\u4FDD\u7559 Zotero \u5F15\u7528\u57DF\u3002\u63D0\u524D\u751F\u6210\u53EA\u586B\u5145\u521D\u59CB\u663E\u793A\uFF1B\u4E0D\u517C\u5BB9\u7684\u6837\u5F0F\u5C06\u4FDD\u7559\u63D0\u793A\uFF0C\u4EA4\u7531 Word \u4E2D\u7684 Zotero \u5237\u65B0\u3002",
+  "progress.export.citationFallback": "\u5F15\u7528\u6539\u7531 Word \u4E2D\u7684 Zotero \u5237\u65B0",
+  "format.citationDisplay.manual": "\u5728 Word \u4E2D\u624B\u52A8\u5237\u65B0",
+  "format.citationDisplay.rendered": "\u5BFC\u51FA\u65F6\u5148\u751F\u6210\u53EF\u8BFB\u5F15\u7528\uFF08\u9ED8\u8BA4\uFF09"
 };
 
 // src/i18n.ts
@@ -2012,8 +2042,80 @@ var obsidianBufferedRequest = async ({
   };
 };
 
+// src/zotero-styles.ts
+var fs2 = __toESM(require("node:fs/promises"), 1);
+var path2 = __toESM(require("node:path"), 1);
+var os = __toESM(require("node:os"), 1);
+function xmlText(value) {
+  return value.replace(/&#(x[\da-f]+|\d+);|&(amp|lt|gt|quot|apos);/gi, (_, number, name) => {
+    if (number) return String.fromCodePoint(number[0].toLowerCase() === "x" ? parseInt(number.slice(1), 16) : Number(number));
+    return { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" }[name.toLowerCase()];
+  });
+}
+function styleMetadata(xml, file) {
+  const info = xml.replace(/<!--[\s\S]*?-->/g, "").match(/<info\b[^>]*>([\s\S]*?)<\/info>/)?.[1];
+  if (!info) return null;
+  const id = xmlText(info.match(/<id\b[^>]*>([^<]+)<\/id>/)?.[1]?.trim() || "");
+  const title = xmlText(info.match(/<title\b[^>]*>([^<]+)<\/title>/)?.[1]?.trim() || "");
+  if (!/^https?:\/\/\S+$/.test(id) || !title) return null;
+  const parentLink = [...info.matchAll(/<link\b([^>]+)\/?\s*>/g)].find((match) => /\brel\s*=\s*["']independent-parent["']/.test(match[1]));
+  const parent = parentLink ? xmlText(parentLink[1].match(/\bhref\s*=\s*["']([^"']+)["']/)?.[1] || "") : "";
+  const locale = xml.match(/<style\b[^>]*\bdefault-locale\s*=\s*["']([^"']+)["']/)?.[1] || "";
+  return { id, title, path: file, parent, locale };
+}
+async function discoverZoteroStyles(home = os.homedir(), environment = process.env) {
+  const profiles = [path2.join(home, ".zotero", "zotero"), path2.join(home, "Library", "Application Support", "Zotero")];
+  if (environment.APPDATA) profiles.unshift(path2.join(environment.APPDATA, "Zotero", "Zotero"));
+  const directories = /* @__PURE__ */ new Set([path2.join(home, "Zotero", "styles")]);
+  for (const base of profiles) {
+    try {
+      const ini = await fs2.readFile(path2.join(base, "profiles.ini"), "utf8");
+      for (const section of ini.split(/\r?\n\s*\[/)) {
+        const profile = section.match(/^Path=(.+)$/m)?.[1]?.trim();
+        if (!profile) continue;
+        const absolute = /^IsRelative=0\s*$/m.test(section) ? profile : path2.resolve(base, profile);
+        const prefs = await fs2.readFile(path2.join(absolute, "prefs.js"), "utf8");
+        const raw = prefs.match(/user_pref\("extensions\.zotero\.dataDir",\s*("(?:\\.|[^"\\])*")\s*\)/)?.[1];
+        if (raw && !/user_pref\("extensions\.zotero\.useDataDir",\s*false\s*\)/.test(prefs)) directories.add(path2.join(JSON.parse(raw), "styles"));
+      }
+    } catch {
+    }
+  }
+  const records = [];
+  const scanned = [];
+  for (const directory of directories) {
+    for (const folder of [directory, path2.join(directory, "hidden")]) {
+      try {
+        const files = (await fs2.readdir(folder)).filter((file) => file.toLowerCase().endsWith(".csl"));
+        scanned.push(folder);
+        const results = await Promise.all(files.map(async (file) => {
+          try {
+            const full = path2.join(folder, file);
+            return styleMetadata(await fs2.readFile(full, "utf8"), full);
+          } catch {
+            return null;
+          }
+        }));
+        records.push(...results.filter(Boolean).map((record) => ({ ...record, hidden: folder !== directory })));
+      } catch {
+      }
+    }
+  }
+  const byId = new Map(records.map((record) => [record.id, record]));
+  const styles = records.filter((record) => !record.hidden).map((record) => {
+    let resolved = record;
+    const seen = /* @__PURE__ */ new Set([record.id]);
+    while (resolved.parent && byId.has(resolved.parent) && !seen.has(resolved.parent)) {
+      seen.add(resolved.parent);
+      resolved = byId.get(resolved.parent);
+    }
+    return { ...record, renderPath: resolved.parent ? "" : resolved.path };
+  });
+  return { styles: [...new Map(styles.map((style) => [style.id, style])).values()].sort((a, b) => a.title.localeCompare(b.title)), directories: scanned };
+}
+
 // src/main.ts
-var PLUGIN_VERSION = "1.5.4";
+var PLUGIN_VERSION = "1.6.0";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -2065,6 +2167,7 @@ var RUNTIME_TARGETS = Object.freeze({
 var DEFAULT_TEMPLATE_FILE = "\u5BFC\u51FA\u683C\u5F0F\u6A21\u677F.docx";
 var DEFAULT_FORMAT = Object.freeze({
   preset_name: "\u5F53\u524D\u671F\u520A\u6A21\u677F",
+  document_language: "zh-CN",
   east_asia_font: "\u5B8B\u4F53",
   western_font: "Times New Roman",
   body_size_pt: 12,
@@ -2211,13 +2314,13 @@ function localizedRuntimeDownloadError(plugin, error, version, asset) {
 function finalizeDownloadedArchive(workspace, expectedSize, t) {
   let descriptor = null;
   try {
-    const partialSize = fs2.statSync(workspace.partialZipPath).size;
+    const partialSize = fs3.statSync(workspace.partialZipPath).size;
     if (partialSize !== expectedSize) {
       throw new Error(t("runtime.install.archiveMissing"));
     }
-    descriptor = fs2.openSync(workspace.partialZipPath, "r");
+    descriptor = fs3.openSync(workspace.partialZipPath, "r");
     const header = Buffer.alloc(4);
-    const bytesRead = fs2.readSync(descriptor, header, 0, header.length, 0);
+    const bytesRead = fs3.readSync(descriptor, header, 0, header.length, 0);
     if (bytesRead < 4) {
       throw new Error(t("runtime.install.archiveEmpty"));
     }
@@ -2227,11 +2330,11 @@ function finalizeDownloadedArchive(workspace, expectedSize, t) {
     }
   } finally {
     if (descriptor !== null) {
-      fs2.closeSync(descriptor);
+      fs3.closeSync(descriptor);
     }
   }
-  fs2.renameSync(workspace.partialZipPath, workspace.zipPath);
-  if (fs2.statSync(workspace.zipPath).size !== expectedSize) {
+  fs3.renameSync(workspace.partialZipPath, workspace.zipPath);
+  if (fs3.statSync(workspace.zipPath).size !== expectedSize) {
     throw new Error(t("runtime.install.archiveMissing"));
   }
   return expectedSize;
@@ -2253,6 +2356,7 @@ function cloneFormat(config = DEFAULT_FORMAT) {
 }
 function formatSummary(config, t = DEFAULT_TRANSLATOR) {
   return t("format.summary", {
+    documentLanguage: config.document_language === "en-US" ? "English" : "\u4E2D\u6587",
     eastAsiaFont: config.east_asia_font,
     westernFont: config.western_font,
     bodySize: config.body_size_pt,
@@ -2336,17 +2440,17 @@ function fileTimestamp(date = /* @__PURE__ */ new Date()) {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 function uniqueOutputPath(requestedPath) {
-  if (!fs2.existsSync(requestedPath)) {
+  if (!fs3.existsSync(requestedPath)) {
     return requestedPath;
   }
-  const directory = path2.dirname(requestedPath);
-  const extension = path2.extname(requestedPath) || ".docx";
-  const stem = path2.basename(requestedPath, extension);
+  const directory = path3.dirname(requestedPath);
+  const extension = path3.extname(requestedPath) || ".docx";
+  const stem = path3.basename(requestedPath, extension);
   const stampedStem = `${stem}-${fileTimestamp()}`;
-  let candidate = path2.join(directory, `${stampedStem}${extension}`);
+  let candidate = path3.join(directory, `${stampedStem}${extension}`);
   let sequence = 2;
-  while (fs2.existsSync(candidate)) {
-    candidate = path2.join(
+  while (fs3.existsSync(candidate)) {
+    candidate = path3.join(
       directory,
       `${stampedStem}-${sequence}${extension}`
     );
@@ -2355,10 +2459,10 @@ function uniqueOutputPath(requestedPath) {
   return candidate;
 }
 var ExportModeModal = class extends import_obsidian2.Modal {
-  constructor(plugin, resolve) {
+  constructor(plugin, resolve2) {
     super(plugin.app);
     this.plugin = plugin;
-    this.resolve = resolve;
+    this.resolve = resolve2;
     this.resolved = false;
   }
   choose(mode) {
@@ -2402,11 +2506,11 @@ var ExportModeModal = class extends import_obsidian2.Modal {
   }
 };
 var WordFileSelectModal = class extends import_obsidian2.Modal {
-  constructor(plugin, files, resolve) {
+  constructor(plugin, files, resolve2) {
     super(plugin.app);
     this.plugin = plugin;
     this.files = files;
-    this.resolve = resolve;
+    this.resolve = resolve2;
     this.resolved = false;
     this.selectedPath = files[0]?.path || "";
   }
@@ -2458,14 +2562,20 @@ var WordFileSelectModal = class extends import_obsidian2.Modal {
   }
 };
 var FormatSettingsModal = class extends import_obsidian2.Modal {
-  constructor(plugin, options, resolve) {
+  constructor(plugin, options, resolve2) {
     super(plugin.app);
     this.plugin = plugin;
-    this.resolve = resolve;
+    this.resolve = resolve2;
     this.resolved = false;
     this.presets = options.presets || {};
     this.templateFiles = options.templateFiles.length ? options.templateFiles : [DEFAULT_TEMPLATE_FILE];
     this.figureReflowDefault = options.figureReflowDefault === true;
+    this.documentLanguage = /^en(?:[-_]|$)/i.test(String(options.documentLanguage || "")) ? "en-US" : "zh-CN";
+    this.citationReport = options.citationReport || {};
+    this.zoteroStyles = options.zoteroStyles || { styles: [], directories: [] };
+    const defaultCitationStyleId = plugin.exportSettings?.defaultCitationStyleId || "";
+    this.citationStyleId = this.zoteroStyles.styles.some((style) => style.id === defaultCitationStyleId) ? defaultCitationStyleId : "";
+    this.citationDisplay = "rendered";
     this.selectedPreset = "__default__";
     this.config = this.defaultCommandFormat();
     this.templateFile = this.templateFiles.includes(DEFAULT_TEMPLATE_FILE) ? DEFAULT_TEMPLATE_FILE : this.templateFiles[0];
@@ -2474,6 +2584,8 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
   }
   defaultCommandFormat() {
     return cloneFormat({
+      document_language: this.documentLanguage,
+      ...this.documentLanguage === "en-US" ? { body_first_line_chars: 2, east_asia_font: "Times New Roman" } : {},
       figure_reflow: this.figureReflowDefault
     });
   }
@@ -2502,6 +2614,11 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
     const config = useDefault ? this.defaultCommandFormat() : cloneFormat(this.config);
     const templateFile = useDefault ? this.templateFiles.includes(DEFAULT_TEMPLATE_FILE) ? DEFAULT_TEMPLATE_FILE : this.templateFiles[0] : this.templateFile;
     const requestedName = this.presetName.trim();
+    const chosenStyle = this.zoteroStyles.styles.find((style) => style.id === this.citationStyleId);
+    if (this.citationDisplay === "rendered" && chosenStyle && !chosenStyle.renderPath) {
+      new import_obsidian2.Notice(t("format.citationStyle.parentMissing"));
+      return;
+    }
     if (savePreset && !requestedName) {
       new import_obsidian2.Notice(t("format.saveName.required"));
       return;
@@ -2519,7 +2636,9 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
       savePreset,
       presetName: requestedName,
       displayName,
-      outputName: normalizedOutput.value
+      outputName: normalizedOutput.value,
+      citationStyle: this.zoteroStyles.styles.find((style) => style.id === this.citationStyleId) || null,
+      citationDisplay: this.citationDisplay
     });
   }
   addDropdown(container, name, desc, key, options) {
@@ -2549,7 +2668,60 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
     contentEl.style.maxHeight = "80vh";
     contentEl.style.overflowY = "auto";
     contentEl.createEl("h2", { text: t("format.title") });
+    const summary = contentEl.createDiv({ cls: "md-export-format-summary" });
+    summary.style.cssText = "position:sticky;top:0;z-index:2;padding:12px;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:8px;white-space:pre-wrap;";
+    const updateSummary = () => {
+      const selectedStyle = this.zoteroStyles.styles.find((style) => style.id === this.citationStyleId);
+      const styleLabel = selectedStyle?.title || this.citationReport.style;
+      const english = this.config.document_language === "en-US", uiEnglish = this.plugin.getLanguage() === "en";
+      const indent = Number(this.config.body_first_line_chars) * (english ? 0.5 : 1);
+      const lines = uiEnglish ? ["Current export format", `Manuscript: ${english ? "English" : "Chinese"}`, `Font: ${english ? this.config.western_font : this.config.east_asia_font + " / " + this.config.western_font}`, `Body: ${this.config.body_size_pt} pt; line spacing ${this.config.body_line_spacing}`, `First-line indent: ${indent} em; alignment: justified`, `CSL: ${this.citationReport.style || "Global/default citation style"}`] : ["\u672C\u6B21\u5B9E\u9645\u5BFC\u51FA\u683C\u5F0F", `\u7A3F\u4EF6\uFF1A${english ? "\u82F1\u6587" : "\u4E2D\u6587"}`, `\u5B57\u4F53\uFF1A${english ? this.config.western_font : this.config.east_asia_font + " / " + this.config.western_font}`, `\u6B63\u6587\uFF1A${this.config.body_size_pt} pt\uFF1B\u884C\u8DDD ${this.config.body_line_spacing} \u500D`, `\u9996\u884C\u7F29\u8FDB\uFF1A${indent} em\uFF1B\u6B63\u6587\u4E24\u7AEF\u5BF9\u9F50`, `\u5F15\u7528\u6837\u5F0F\uFF1A${this.citationReport.style || "\u5168\u5C40\uFF0F\u9ED8\u8BA4 CSL"}`];
+      lines[lines.length - 1] = (uiEnglish ? "Citation style: " : "\u5F15\u7528\u6837\u5F0F\uFF1A") + (styleLabel || t("format.citationStyle.follow"));
+      if (!selectedStyle && this.citationReport.issues?.length) lines.push((uiEnglish ? "Check: " : "\u9700\u6838\u5B9E\uFF1A") + this.citationReport.issues.join("\n"));
+      summary.setText(lines.join("\n"));
+    };
+    updateSummary();
+    contentEl.oninput = () => queueMicrotask(updateSummary);
+    contentEl.onchange = () => queueMicrotask(updateSummary);
     addLanguageSetting(contentEl, this.plugin);
+    new import_obsidian2.Setting(contentEl).setName(t("format.citationStyle.name")).setDesc(t(this.zoteroStyles.styles.length ? "format.citationStyle.desc" : "format.citationStyle.empty")).addDropdown((dropdown) => {
+      dropdown.addOption("", t("format.citationStyle.follow"));
+      for (const style of this.zoteroStyles.styles) dropdown.addOption(style.id, style.title);
+      dropdown.setValue(this.citationStyleId).onChange((value) => {
+        this.citationStyleId = value;
+        updateSummary();
+      });
+      dropdown.selectEl.style.maxWidth = "360px";
+    }).addButton((button) => button.setButtonText(t("format.citationStyle.refresh")).onClick(async () => {
+      button.setDisabled(true);
+      try {
+        this.zoteroStyles = await discoverZoteroStyles();
+        if (!this.zoteroStyles.styles.some((style) => style.id === this.citationStyleId)) this.citationStyleId = "";
+        this.render();
+      } finally {
+        button.setDisabled(false);
+      }
+    }));
+    new import_obsidian2.Setting(contentEl).setName(t("format.citationDisplay.name")).setDesc(t("format.citationDisplay.desc")).addDropdown((dropdown) => dropdown.addOption("manual", t("format.citationDisplay.manual")).addOption("rendered", t("format.citationDisplay.rendered")).setValue(this.citationDisplay).onChange((value) => {
+      this.citationDisplay = value;
+    }));
+    new import_obsidian2.Setting(contentEl).setName(t("format.documentLanguage.name")).setDesc(t("format.documentLanguage.desc")).addButton((button) => {
+      button.setButtonText(t("format.documentLanguage.zhCN")).onClick(() => {
+        this.config.document_language = "zh-CN";
+        this.config.body_first_line_chars = 2;
+        this.config.east_asia_font = "\u5B8B\u4F53";
+        this.render();
+      });
+      if (this.config.document_language !== "en-US") button.setCta();
+    }).addButton((button) => {
+      button.setButtonText(t("format.documentLanguage.en")).onClick(() => {
+        this.config.document_language = "en-US";
+        this.config.body_first_line_chars = 2;
+        this.config.east_asia_font = this.config.western_font;
+        this.render();
+      });
+      if (this.config.document_language === "en-US") button.setCta();
+    });
     contentEl.createEl("p", {
       text: t("format.intro", {
         summary: formatSummary(this.defaultCommandFormat(), t)
@@ -3018,15 +3190,15 @@ var RuntimeDownloadModal = class extends import_obsidian2.Modal {
     this.actionState = "waiting-retry";
     this.refreshText();
     this.renderActions();
-    return new Promise((resolve) => {
-      this.retryResolver = resolve;
+    return new Promise((resolve2) => {
+      this.retryResolver = resolve2;
     });
   }
   resolveRetry(value) {
-    const resolve = this.retryResolver;
+    const resolve2 = this.retryResolver;
     this.retryResolver = null;
-    if (resolve) {
-      resolve(value);
+    if (resolve2) {
+      resolve2(value);
     }
   }
   completeInstall() {
@@ -3294,9 +3466,9 @@ var ExportProgressModal = class extends import_obsidian2.Modal {
   }
   async copyLogText(logPath = "") {
     let text = this.logLines.join("\n");
-    if (logPath && fs2.existsSync(logPath)) {
+    if (logPath && fs3.existsSync(logPath)) {
       try {
-        text = fs2.readFileSync(logPath, "utf8");
+        text = fs3.readFileSync(logPath, "utf8");
       } catch {
       }
     }
@@ -3306,7 +3478,7 @@ var ExportProgressModal = class extends import_obsidian2.Modal {
     );
   }
   openLogFile(logPath) {
-    if (!logPath || !fs2.existsSync(logPath)) {
+    if (!logPath || !fs3.existsSync(logPath)) {
       new import_obsidian2.Notice(this.plugin.t("progressModal.logNotFound"), 1e4);
       return;
     }
@@ -3378,13 +3550,13 @@ var ExportProgressModal = class extends import_obsidian2.Modal {
   }
 };
 var TextInputModal = class extends import_obsidian2.Modal {
-  constructor(plugin, titleKey, descriptionKey, initialValue, resolve) {
+  constructor(plugin, titleKey, descriptionKey, initialValue, resolve2) {
     super(plugin.app);
     this.plugin = plugin;
     this.titleKey = titleKey;
     this.descriptionKey = descriptionKey;
     this.value = initialValue || "";
-    this.resolve = resolve;
+    this.resolve = resolve2;
     this.resolved = false;
   }
   finish(value) {
@@ -3429,7 +3601,7 @@ var TextInputModal = class extends import_obsidian2.Modal {
   }
 };
 function runProcess(executable, args, options = {}) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     let output = "";
     const child = (0, import_node_child_process.spawn)(executable, args, {
       windowsHide: true,
@@ -3445,7 +3617,7 @@ function runProcess(executable, args, options = {}) {
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
     child.once("error", reject);
-    child.once("close", (code) => resolve({ code, output }));
+    child.once("close", (code) => resolve2({ code, output }));
   });
 }
 function humanizeProcessOutput(output, language = "zh-CN") {
@@ -3475,10 +3647,10 @@ function appendFailureProcessOutput(logPath, output, language = "zh-CN") {
     return;
   }
   const section = "\nObsidian captured process output\n--------------------------------\n" + humanOutput + "\n";
-  if (fs2.existsSync(logPath)) {
-    fs2.appendFileSync(logPath, section, "utf8");
+  if (fs3.existsSync(logPath)) {
+    fs3.appendFileSync(logPath, section, "utf8");
   } else {
-    fs2.writeFileSync(
+    fs3.writeFileSync(
       logPath,
       "MD Export Word failure report\n" + section,
       "utf8"
@@ -3680,7 +3852,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     if (typeof adapter.getBasePath !== "function") {
       return null;
     }
-    return path2.join(
+    return path3.join(
       adapter.getBasePath(),
       this.app.vault.configDir,
       "plugins",
@@ -3689,11 +3861,11 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
   }
   getRuntimeRoot() {
     const pluginRoot = this.getPluginRoot();
-    return pluginRoot ? path2.join(pluginRoot, "runtime") : null;
+    return pluginRoot ? path3.join(pluginRoot, "runtime") : null;
   }
   getTemplateRoot() {
     const pluginRoot = this.getPluginRoot();
-    return pluginRoot ? path2.join(pluginRoot, "templates") : null;
+    return pluginRoot ? path3.join(pluginRoot, "templates") : null;
   }
   getRuntimeTarget() {
     const selected = String(
@@ -3732,18 +3904,18 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     if (!root || !target) {
       return null;
     }
-    const binaryRoot = path2.join(root, "Pandoc&pandoc-crossref");
+    const binaryRoot = path3.join(root, "Pandoc&pandoc-crossref");
     return {
       root,
       target,
-      manifest: path2.join(root, RUNTIME_MANIFEST),
-      exporter: path2.join(root, "scripts", "md_export_word_template.py"),
-      recolor: path2.join(root, "scripts", "recolor_zotero_citations.py"),
-      doctor: path2.join(root, "scripts", "doctor.py"),
-      pandoc: path2.join(binaryRoot, target.pandocFile),
-      crossref: path2.join(binaryRoot, target.crossrefFile),
-      python: path2.join(root, ...target.pythonParts),
-      template: path2.join(root, "Word-Template", DEFAULT_TEMPLATE_FILE)
+      manifest: path3.join(root, RUNTIME_MANIFEST),
+      exporter: path3.join(root, "scripts", "md_export_word_template.py"),
+      recolor: path3.join(root, "scripts", "recolor_zotero_citations.py"),
+      doctor: path3.join(root, "scripts", "doctor.py"),
+      pandoc: path3.join(binaryRoot, target.pandocFile),
+      crossref: path3.join(binaryRoot, target.crossrefFile),
+      python: path3.join(root, ...target.pythonParts),
+      template: path3.join(root, "Word-Template", DEFAULT_TEMPLATE_FILE)
     };
   }
   ensureTemplateLibrary() {
@@ -3752,16 +3924,16 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     if (!runtimeRoot || !templateRoot) {
       return null;
     }
-    const bundled = path2.join(runtimeRoot, "Word-Template");
-    fs2.mkdirSync(templateRoot, { recursive: true });
-    for (const name of fs2.readdirSync(bundled)) {
+    const bundled = path3.join(runtimeRoot, "Word-Template");
+    fs3.mkdirSync(templateRoot, { recursive: true });
+    for (const name of fs3.readdirSync(bundled)) {
       if (name.startsWith("~$") || !name.toLowerCase().endsWith(".docx")) {
         continue;
       }
-      const source = path2.join(bundled, name);
-      const destination = path2.join(templateRoot, name);
-      if (!fs2.existsSync(destination)) {
-        fs2.copyFileSync(source, destination);
+      const source = path3.join(bundled, name);
+      const destination = path3.join(templateRoot, name);
+      if (!fs3.existsSync(destination)) {
+        fs3.copyFileSync(source, destination);
       }
     }
     return templateRoot;
@@ -3799,7 +3971,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       runtimePaths.python,
       runtimePaths.template
     ];
-    const missing = required.filter((file) => !fs2.existsSync(file));
+    const missing = required.filter((file) => !fs3.existsSync(file));
     if (missing.length) {
       return {
         ready: false,
@@ -3811,7 +3983,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     }
     try {
       const manifest = JSON.parse(
-        fs2.readFileSync(runtimePaths.manifest, "utf8")
+        fs3.readFileSync(runtimePaths.manifest, "utf8")
       );
       if (manifest.version !== expectedVersion) {
         return {
@@ -3851,13 +4023,13 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     return this.runtimeStatus().message;
   }
   async askRepository(initialValue = "") {
-    return await new Promise((resolve) => {
+    return await new Promise((resolve2) => {
       new TextInputModal(
         this,
         "repositoryModal.title",
         "repositoryModal.desc",
         initialValue,
-        resolve
+        resolve2
       ).open();
     });
   }
@@ -3915,7 +4087,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     const version = this.manifest.version || PLUGIN_VERSION;
     const assetUrl = `https://github.com/${repository}/releases/download/${version}/${target.asset}`;
     const checksumUrl = `https://github.com/${repository}/releases/download/${version}/SHA256SUMS-${target.id}.txt`;
-    const runtimePath = path2.join(pluginRoot, "runtime");
+    const runtimePath = path3.join(pluginRoot, "runtime");
     let workspace = null;
     let installLock = null;
     let progressStageCode = "prepare";
@@ -4004,7 +4176,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
         downloadResult.receivedBytes,
         t
       );
-      fs2.mkdirSync(workspace.stagePath, { recursive: true });
+      fs3.mkdirSync(workspace.stagePath, { recursive: true });
       setProgress(
         "extract",
         "runtime.install.stage.extract",
@@ -4038,16 +4210,16 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
         "runtime.install.stage.validatePackage",
         "runtime.install.detail.validatePackage"
       );
-      const payloadPath = path2.join(workspace.stagePath, "runtime");
-      const payloadManifestPath = path2.join(
+      const payloadPath = path3.join(workspace.stagePath, "runtime");
+      const payloadManifestPath = path3.join(
         payloadPath,
         RUNTIME_MANIFEST
       );
-      if (!fs2.existsSync(payloadManifestPath)) {
+      if (!fs3.existsSync(payloadManifestPath)) {
         throw new Error(t("runtime.install.manifestMissing"));
       }
       const payloadManifest = JSON.parse(
-        fs2.readFileSync(payloadManifestPath, "utf8")
+        fs3.readFileSync(payloadManifestPath, "utf8")
       );
       if (payloadManifest.version !== version || payloadManifest.platform !== target.id) {
         throw new Error(
@@ -4062,11 +4234,11 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
         "runtime.install.stage.replace",
         "runtime.install.detail.replace"
       );
-      if (fs2.existsSync(runtimePath)) {
-        fs2.renameSync(runtimePath, workspace.backupPath);
+      if (fs3.existsSync(runtimePath)) {
+        fs3.renameSync(runtimePath, workspace.backupPath);
         oldRuntimeBackedUp = true;
       }
-      fs2.renameSync(payloadPath, runtimePath);
+      fs3.renameSync(payloadPath, runtimePath);
       newRuntimeActivated = true;
       setProgress(
         "setup",
@@ -4075,7 +4247,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       );
       let setupResult;
       if (process.platform === "win32") {
-        const setupPath = path2.join(
+        const setupPath = path3.join(
           runtimePath,
           "scripts",
           "setup-runtime.ps1"
@@ -4093,28 +4265,28 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
         );
       } else {
         const executablePaths = [
-          path2.join(runtimePath, "scripts", "setup-runtime.sh"),
-          path2.join(runtimePath, "scripts", "doctor.sh"),
-          path2.join(runtimePath, "scripts", "MD\u5BFC\u51FAWord\u6A21\u677F.command"),
-          path2.join(
+          path3.join(runtimePath, "scripts", "setup-runtime.sh"),
+          path3.join(runtimePath, "scripts", "doctor.sh"),
+          path3.join(runtimePath, "scripts", "MD\u5BFC\u51FAWord\u6A21\u677F.command"),
+          path3.join(
             runtimePath,
             "Pandoc&pandoc-crossref",
             target.pandocFile
           ),
-          path2.join(
+          path3.join(
             runtimePath,
             "Pandoc&pandoc-crossref",
             target.crossrefFile
           )
         ];
         for (const executablePath of executablePaths) {
-          if (fs2.existsSync(executablePath)) {
-            fs2.chmodSync(executablePath, 493);
+          if (fs3.existsSync(executablePath)) {
+            fs3.chmodSync(executablePath, 493);
           }
         }
         setupResult = await runProcess(
           "/bin/bash",
-          [path2.join(runtimePath, "scripts", "setup-runtime.sh")],
+          [path3.join(runtimePath, "scripts", "setup-runtime.sh")],
           { cwd: runtimePath }
         );
       }
@@ -4149,17 +4321,17 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       const failureMessage = error instanceof RuntimeDownloadError ? localizedRuntimeDownloadError(this, error, version, target.asset) : errorMessage2(error);
       let recoveryMessage = "";
       try {
-        if (newRuntimeActivated && fs2.existsSync(runtimePath)) {
-          fs2.rmSync(runtimePath, { recursive: true, force: true });
+        if (newRuntimeActivated && fs3.existsSync(runtimePath)) {
+          fs3.rmSync(runtimePath, { recursive: true, force: true });
         }
         if (oldRuntimeBackedUp) {
-          if (!workspace || !fs2.existsSync(workspace.backupPath)) {
+          if (!workspace || !fs3.existsSync(workspace.backupPath)) {
             throw new Error(t("runtime.install.backupMissing"));
           }
-          if (fs2.existsSync(runtimePath)) {
-            fs2.rmSync(runtimePath, { recursive: true, force: true });
+          if (fs3.existsSync(runtimePath)) {
+            fs3.rmSync(runtimePath, { recursive: true, force: true });
           }
-          fs2.renameSync(workspace.backupPath, runtimePath);
+          fs3.renameSync(workspace.backupPath, runtimePath);
         }
         rollbackSucceeded = true;
       } catch (rollbackError) {
@@ -4176,7 +4348,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       }
       const downloadFailure = ["checksum", "download", "validate-download"].includes(progressStageCode);
       const retryHint = downloadFailure ? t("runtime.install.networkHint") : t("runtime.install.retryHint");
-      const backupAvailable = !rollbackSucceeded && oldRuntimeBackedUp && workspace && fs2.existsSync(workspace.backupPath);
+      const backupAvailable = !rollbackSucceeded && oldRuntimeBackedUp && workspace && fs3.existsSync(workspace.backupPath);
       const backupHint = backupAvailable ? t("runtime.install.backupRetained", { path: workspace.backupPath }) : !rollbackSucceeded ? t("runtime.install.cleanupIncomplete") : "";
       if (!(error instanceof RuntimeDownloadError && error.code === "ABORTED")) {
         downloadModal?.fail(
@@ -4224,7 +4396,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       return false;
     }
     const runtimePaths = this.runtimePaths(root);
-    if (!runtimePaths || !fs2.existsSync(runtimePaths.doctor) || !fs2.existsSync(runtimePaths.python)) {
+    if (!runtimePaths || !fs3.existsSync(runtimePaths.doctor) || !fs3.existsSync(runtimePaths.python)) {
       new import_obsidian2.Notice(t("runtime.doctor.missing"));
       return false;
     }
@@ -4248,27 +4420,31 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     return result.code === 0;
   }
   selectExportMode() {
-    return new Promise((resolve) => {
-      new ExportModeModal(this, resolve).open();
+    return new Promise((resolve2) => {
+      new ExportModeModal(this, resolve2).open();
     });
   }
-  selectFormatSettings(templateFiles, outputName, options = {}) {
-    return new Promise((resolve) => {
+  async selectFormatSettings(templateFiles, outputName, options = {}) {
+    const zoteroStyles = options.zoteroStyles || await discoverZoteroStyles();
+    return new Promise((resolve2) => {
       new FormatSettingsModal(
         this,
         {
           presets: this.exportSettings.presets,
           templateFiles,
           outputName,
-          figureReflowDefault: options.figureReflowDefault === true
+          figureReflowDefault: options.figureReflowDefault === true,
+          documentLanguage: options.documentLanguage,
+          citationReport: options.citationReport,
+          zoteroStyles
         },
-        resolve
+        resolve2
       ).open();
     });
   }
   selectWordFile(files) {
-    return new Promise((resolve) => {
-      new WordFileSelectModal(this, files, resolve).open();
+    return new Promise((resolve2) => {
+      new WordFileSelectModal(this, files, resolve2).open();
     });
   }
   async recolorWordCitationsForCurrentFile(file) {
@@ -4294,19 +4470,19 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       }
     }
     const runtimePaths = this.runtimePaths(this.getRuntimeRoot());
-    if (!runtimePaths || !fs2.existsSync(runtimePaths.python) || !fs2.existsSync(runtimePaths.recolor)) {
+    if (!runtimePaths || !fs3.existsSync(runtimePaths.python) || !fs3.existsSync(runtimePaths.recolor)) {
       new import_obsidian2.Notice(t("recolor.toolMissing"));
       return;
     }
-    const markdownPath = path2.join(adapter.getBasePath(), file.path);
-    const directory = path2.dirname(markdownPath);
+    const markdownPath = path3.join(adapter.getBasePath(), file.path);
+    const directory = path3.dirname(markdownPath);
     let wordFiles = [];
     try {
-      wordFiles = fs2.readdirSync(directory, { withFileTypes: true }).filter(
+      wordFiles = fs3.readdirSync(directory, { withFileTypes: true }).filter(
         (entry) => entry.isFile() && !entry.name.startsWith("~$") && entry.name.toLowerCase().endsWith(".docx")
       ).map((entry) => {
-        const wordPath = path2.join(directory, entry.name);
-        const modified = fs2.statSync(wordPath).mtime;
+        const wordPath = path3.join(directory, entry.name);
+        const modified = fs3.statSync(wordPath).mtime;
         return {
           path: wordPath,
           modified,
@@ -4332,28 +4508,28 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       new import_obsidian2.Notice(t("recolor.cancelled"));
       return;
     }
-    if (!fs2.existsSync(selectedPath)) {
+    if (!fs3.existsSync(selectedPath)) {
       new import_obsidian2.Notice(t("recolor.fileMissing", { path: selectedPath }), 1e4);
       return;
     }
-    const requestedOutput = path2.join(
-      path2.dirname(selectedPath),
-      `${path2.basename(selectedPath, path2.extname(selectedPath))}-\u5F15\u6587\u84DD\u8272.docx`
+    const requestedOutput = path3.join(
+      path3.dirname(selectedPath),
+      `${path3.basename(selectedPath, path3.extname(selectedPath))}-\u5F15\u6587\u84DD\u8272.docx`
     );
     const outputPath = uniqueOutputPath(requestedOutput);
-    const failureLogPath = path2.join(
-      path2.dirname(selectedPath),
-      `${path2.basename(selectedPath, path2.extname(selectedPath))}-\u5F15\u6587\u7740\u8272\u5931\u8D25.log.txt`
+    const failureLogPath = path3.join(
+      path3.dirname(selectedPath),
+      `${path3.basename(selectedPath, path3.extname(selectedPath))}-\u5F15\u6587\u7740\u8272\u5931\u8D25.log.txt`
     );
-    if (fs2.existsSync(failureLogPath)) {
+    if (fs3.existsSync(failureLogPath)) {
       try {
-        fs2.unlinkSync(failureLogPath);
+        fs3.unlinkSync(failureLogPath);
       } catch {
       }
     }
     const progressModal = new ExportProgressModal(
       this,
-      path2.basename(selectedPath),
+      path3.basename(selectedPath),
       {
         titleKey: "progressModal.recolor.title",
         successKey: "progressModal.recolor.success",
@@ -4384,7 +4560,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     let output = "";
     let failedToStart = false;
     const child = (0, import_node_child_process.spawn)(runtimePaths.python, recolorArgs, {
-      cwd: path2.dirname(runtimePaths.recolor),
+      cwd: path3.dirname(runtimePaths.recolor),
       env: {
         ...process.env,
         PYTHONUTF8: "1",
@@ -4448,10 +4624,10 @@ ${launchError}
       }
       if (code === 0) {
         const wordMatch = output.match(/Word：([^\r\n]+)/);
-        const wordName = wordMatch ? path2.basename(wordMatch[1].trim()) : path2.basename(outputPath);
-        if (fs2.existsSync(failureLogPath)) {
+        const wordName = wordMatch ? path3.basename(wordMatch[1].trim()) : path3.basename(outputPath);
+        if (fs3.existsSync(failureLogPath)) {
           try {
-            fs2.unlinkSync(failureLogPath);
+            fs3.unlinkSync(failureLogPath);
           } catch {
           }
         }
@@ -4475,7 +4651,7 @@ ${launchError}
       );
       new import_obsidian2.Notice(failure, 12e3);
     });
-    new import_obsidian2.Notice(t("recolor.running", { file: path2.basename(outputPath) }), 8e3);
+    new import_obsidian2.Notice(t("recolor.running", { file: path3.basename(outputPath) }), 8e3);
   }
   async exportCurrentFile(file, options = {}) {
     const t = this.t.bind(this);
@@ -4490,7 +4666,7 @@ ${launchError}
       return;
     }
     const vaultPath = adapter.getBasePath();
-    const markdownPath = path2.join(vaultPath, file.path);
+    const markdownPath = path3.join(vaultPath, file.path);
     let markdownSource = "";
     try {
       markdownSource = await this.app.vault.cachedRead(file);
@@ -4527,13 +4703,13 @@ ${launchError}
       new import_obsidian2.Notice(t("export.templateDirectoryFailed"));
       return;
     }
-    if (!runtimePaths || !fs2.existsSync(runtimePaths.python) || !fs2.existsSync(runtimePaths.exporter)) {
+    if (!runtimePaths || !fs3.existsSync(runtimePaths.python) || !fs3.existsSync(runtimePaths.exporter)) {
       new import_obsidian2.Notice(t("export.pythonMissing"));
       return;
     }
     let templateFiles = [];
     try {
-      templateFiles = fs2.readdirSync(templateDir).filter(
+      templateFiles = fs3.readdirSync(templateDir).filter(
         (name) => !name.startsWith("~$") && name.toLowerCase().endsWith(".docx")
       ).sort((a, b) => a.localeCompare(b, "zh-CN"));
     } catch (error) {
@@ -4546,22 +4722,37 @@ ${launchError}
       new import_obsidian2.Notice(t("export.noTemplates", { path: templateDir }));
       return;
     }
+    const citationViewPlugin = this.app.plugins.plugins["paper-caption-preview"];
+    const citationSource = fs3.readFileSync(markdownPath, "utf8");
+    const citationReport = citationViewPlugin?.citationLanguageReport ? await citationViewPlugin.citationLanguageReport(file, citationSource) : { style: this.app.metadataCache.getFileCache(file)?.frontmatter?.csl || this.app.plugins.plugins["obsidian-pandoc-reference-list"]?.settings?.cslStylePath || "" };
     const formatSelection = await this.selectFormatSettings(
       templateFiles,
       defaultOutputName,
       {
-        figureReflowDefault: options.figureReflowDefault === true
+        figureReflowDefault: options.figureReflowDefault === true,
+        citationReport,
+        documentLanguage: (() => {
+          const source = fs3.readFileSync(markdownPath, "utf8");
+          const viewPlugin = this.app.plugins.plugins["paper-caption-preview"];
+          if (viewPlugin?.languageFor) return viewPlugin.languageFor(file, source) === "en" ? "en-US" : "zh-CN";
+          const fm = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+          if (fm.lang) return fm.lang;
+          if (fm.cssclasses?.includes("en-doc")) return "en-US";
+          const body = source.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, "").replace(/!\[[^\r\n]*|\[@[^\]]*\]|https?:\/\/\S+|<[^>]*>/g, "").slice(0, 3e4);
+          const han = (body.match(/[\p{Script=Han}]/gu) || []).length, latin = (body.match(/[A-Za-z]/g) || []).length;
+          return latin >= 40 && han / (han + latin) < 0.15 ? "en-US" : "zh-CN";
+        })()
       }
     );
     if (!formatSelection) {
       new import_obsidian2.Notice(t("export.cancelled"));
       return;
     }
-    const templatePath = path2.join(
+    const templatePath = path3.join(
       templateDir,
       formatSelection.templateFile
     );
-    if (!fs2.existsSync(templatePath)) {
+    if (!fs3.existsSync(templatePath)) {
       new import_obsidian2.Notice(t("export.templateMissing", { path: templatePath }));
       return;
     }
@@ -4576,26 +4767,26 @@ ${launchError}
         t("export.presetSaved", { name: formatSelection.presetName })
       );
     }
-    const requestedOutputPath = path2.join(
-      path2.dirname(markdownPath),
+    const requestedOutputPath = path3.join(
+      path3.dirname(markdownPath),
       `${formatSelection.outputName}.docx`
     );
     const outputPath = uniqueOutputPath(requestedOutputPath);
     if (outputPath !== requestedOutputPath) {
       new import_obsidian2.Notice(
-        t("export.outputRenamed", { file: path2.basename(outputPath) }),
+        t("export.outputRenamed", { file: path3.basename(outputPath) }),
         1e4
       );
     }
     let output = "";
     let failedToStart = false;
-    const failureLogPath = path2.join(
-      path2.dirname(markdownPath),
+    const failureLogPath = path3.join(
+      path3.dirname(markdownPath),
       `${file.basename}-\u5BFC\u51FA\u5931\u8D25.log.txt`
     );
-    if (fs2.existsSync(failureLogPath)) {
+    if (fs3.existsSync(failureLogPath)) {
       try {
-        fs2.unlinkSync(failureLogPath);
+        fs3.unlinkSync(failureLogPath);
       } catch {
       }
     }
@@ -4634,7 +4825,7 @@ ${launchError}
       runtimePaths.python,
       exporterArgs,
       {
-        cwd: path2.dirname(runtimePaths.exporter),
+        cwd: path3.dirname(runtimePaths.exporter),
         env: {
           ...process.env,
           PYTHONUTF8: "1",
@@ -4645,6 +4836,9 @@ ${launchError}
           MD_EXPORT_WORD_MODE: exportMode,
           MD_EXPORT_WORD_TEMPLATE: templatePath,
           MD_EXPORT_WORD_FORMAT_JSON: JSON.stringify(formatSelection.config),
+          MD_EXPORT_WORD_CSL: formatSelection.citationStyle?.path || "",
+          MD_EXPORT_WORD_CSL_RENDER: formatSelection.citationStyle?.renderPath || "",
+          MD_EXPORT_WORD_CITATION_DISPLAY: formatSelection.citationDisplay,
           MD_EXPORT_WORD_PANDOC: runtimePaths.pandoc,
           MD_EXPORT_WORD_CROSSREF: runtimePaths.crossref
         },
@@ -4707,10 +4901,10 @@ ${launchError}
       }
       if (code === 0) {
         const wordMatch = output.match(/Word：([^\r\n]+)/);
-        const wordName = wordMatch ? path2.basename(wordMatch[1].trim()) : path2.basename(outputPath);
-        if (fs2.existsSync(failureLogPath)) {
+        const wordName = wordMatch ? path3.basename(wordMatch[1].trim()) : path3.basename(outputPath);
+        if (fs3.existsSync(failureLogPath)) {
           try {
-            fs2.unlinkSync(failureLogPath);
+            fs3.unlinkSync(failureLogPath);
           } catch {
           }
         }
@@ -4739,7 +4933,7 @@ ${launchError}
       t("export.running", {
         mode: modeLabel,
         format: formatSelection.displayName,
-        file: path2.basename(outputPath)
+        file: path3.basename(outputPath)
       })
     );
   }
