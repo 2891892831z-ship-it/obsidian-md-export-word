@@ -115,6 +115,7 @@ class ExportError(RuntimeError):
 DEFAULT_FORMAT_CONFIG: dict[str, Any] = {
     "preset_name": "当前期刊模板",
     "document_language": "zh-CN",
+    "include_english_captions": True,
     "east_asia_font": "宋体",
     "western_font": "Times New Roman",
     "body_size_pt": 12.0,
@@ -183,11 +184,12 @@ def load_format_config(raw_json: str | None) -> dict[str, Any]:
             raise ExportError("格式设置 document_language 必须是 zh-CN 或 en-US")
         config["document_language"] = language
 
-    if "figure_reflow" in supplied:
-        value = supplied["figure_reflow"]
-        if not isinstance(value, bool):
-            raise ExportError("格式设置 figure_reflow 必须是布尔值")
-        config["figure_reflow"] = value
+    for key in ("figure_reflow", "include_english_captions"):
+        if key in supplied:
+            value = supplied[key]
+            if not isinstance(value, bool):
+                raise ExportError(f"格式设置 {key} 必须是布尔值")
+            config[key] = value
 
     for key, (minimum, maximum) in FORMAT_NUMERIC_LIMITS.items():
         if key not in supplied:
@@ -1888,6 +1890,38 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
         "document_title": document_title,
         "frontmatter_title_suppressed": frontmatter_title_suppressed,
     }
+
+
+def filter_english_caption_blocks(ast: dict[str, Any], config: dict[str, Any]) -> int:
+    """Omit only bilingual EN caption Divs, before citation inventory/filtering.
+
+    Work on Pandoc's parsed tree so code examples and enclosing landscape Divs
+    stay intact. English manuscripts always retain their primary captions.
+    """
+    if config.get("include_english_captions", True) or is_english_document_language(config.get("document_language")):
+        return 0
+    count = 0
+
+    def visit(value: Any) -> None:
+        nonlocal count
+        if isinstance(value, list):
+            retained = []
+            for item in value:
+                if isinstance(item, dict) and item.get("t") == "Div":
+                    attrs = item["c"][0]
+                    style = dict(attrs[2]).get("custom-style", "").strip().casefold()
+                    if style in {"figure caption en", "table caption en"}:
+                        count += 1
+                        continue
+                visit(item)
+                retained.append(item)
+            value[:] = retained
+        elif isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+
+    visit(ast.get("blocks", []))
+    return count
 
 
 def walk_ast(node: Any) -> Iterable[dict[str, Any]]:
@@ -5858,7 +5892,12 @@ def main() -> int:
             if manuscript_csl and not explicit_style and not re.match(r"^https?://", manuscript_csl):
                 _, selected_style_id = selected_csl_metadata(manuscript_csl, vault_root)
                 ast.setdefault("meta", {})["zotero-csl-style"] = {"t":"MetaString", "c":selected_style_id}
+        format_config = language_aware_format_config(
+            format_config, stringify_metadata(ast.get("meta", {}).get("lang"))
+        )
+        omitted_english_captions = filter_english_caption_blocks(ast, format_config)
         inventory = ast_inventory(ast)
+        inventory["omitted_english_captions"] = omitted_english_captions
         citekey_aliases = load_citekey_aliases(ast)
         used_citekey_aliases = apply_citekey_aliases(ast, citekey_aliases)
         if used_citekey_aliases:
@@ -5920,7 +5959,7 @@ def main() -> int:
         inventory["unresolved_citation_clusters"] = unresolved_clusters
         pandoc_input = prepared_md
         pandoc_input_format = MARKDOWN_INPUT_FORMAT
-        if used_citekey_aliases:
+        if used_citekey_aliases or omitted_english_captions:
             pandoc_input = temp_dir / "prepared-citekey-aliases.json"
             pandoc_input.write_text(
                 json.dumps(ast, ensure_ascii=False),

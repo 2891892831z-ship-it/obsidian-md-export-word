@@ -100,6 +100,8 @@ export const en: Record<TranslationKey, string> = {
   "format.bodyLineSpacing.name": "Body line spacing",
   "format.bodyIndent.name": "Body first-line indent",
   "format.documentLanguage.name": "Manuscript language",
+  "format.englishCaptions.name": "Include English figure/table captions",
+  "format.englishCaptions.desc": "On by default: export existing English captions. Turn off to omit Figure Caption EN and Table Caption EN blocks from this Word output only. Markdown is unchanged; no translation is generated. Can be saved in a format preset.",
   "format.documentLanguage.desc": "Defaults to the note's lang. English uses a two-halfwidth-character indent (1 em) and Times New Roman; Chinese uses two fullwidth characters (2 em). Body text is justified; settings remain editable.",
   "format.documentLanguage.zhCN": "Chinese",
   "format.documentLanguage.en": "English",

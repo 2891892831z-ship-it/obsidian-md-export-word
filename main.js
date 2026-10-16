@@ -1374,6 +1374,8 @@ var en = {
   "format.bodyLineSpacing.name": "Body line spacing",
   "format.bodyIndent.name": "Body first-line indent",
   "format.documentLanguage.name": "Manuscript language",
+  "format.englishCaptions.name": "Include English figure/table captions",
+  "format.englishCaptions.desc": "On by default: export existing English captions. Turn off to omit Figure Caption EN and Table Caption EN blocks from this Word output only. Markdown is unchanged; no translation is generated. Can be saved in a format preset.",
   "format.documentLanguage.desc": "Defaults to the note's lang. English uses a two-halfwidth-character indent (1 em) and Times New Roman; Chinese uses two fullwidth characters (2 em). Body text is justified; settings remain editable.",
   "format.documentLanguage.zhCN": "Chinese",
   "format.documentLanguage.en": "English",
@@ -1698,6 +1700,8 @@ var zhCN = {
   "format.bodyLineSpacing.name": "\u6B63\u6587\u884C\u8DDD",
   "format.bodyIndent.name": "\u6B63\u6587\u9996\u884C\u7F29\u8FDB",
   "format.documentLanguage.name": "\u7A3F\u4EF6\u8BED\u8A00",
+  "format.englishCaptions.name": "\u5305\u542B\u82F1\u6587\u56FE\u9898\uFF0F\u8868\u9898",
+  "format.englishCaptions.desc": "\u9ED8\u8BA4\u5F00\u542F\uFF0C\u5BFC\u51FA\u7A3F\u4EF6\u4E2D\u5DF2\u6709\u7684\u5BF9\u5E94\u82F1\u6587\u9898\u540D\u3002\u5173\u95ED\u540E\u4EC5\u4ECE\u672C\u6B21 Word \u8F93\u51FA\u4E2D\u7701\u7565 Figure Caption EN \u548C Table Caption EN \u9898\u6CE8\u5757\uFF0C\u4E0D\u4FEE\u6539 Markdown\uFF0C\u4E5F\u4E0D\u81EA\u52A8\u751F\u6210\u7FFB\u8BD1\u3002\u53EF\u4FDD\u5B58\u5230\u683C\u5F0F\u65B9\u6848\u3002",
   "format.documentLanguage.desc": "\u9ED8\u8BA4\u6CBF\u7528\u7B14\u8BB0 lang\uFF1B\u82F1\u6587\u7A3F\u9996\u884C\u7F29\u8FDB\u4E24\u4E2A\u534A\u89D2\u5B57\u7B26\u5BBD\uFF081 em\uFF09\u3001\u5168\u5B57\u4F53\u65B0\u7F57\u9A6C\uFF0C\u4E2D\u6587\u7A3F\u9996\u884C\u7F29\u8FDB\u4E24\u4E2A\u5168\u89D2\u5B57\u5BBD\uFF082 em\uFF09\u3002\u6B63\u6587\u5747\u4E24\u7AEF\u5BF9\u9F50\uFF0C\u53EF\u7EE7\u7EED\u8C03\u6574\u3002",
   "format.documentLanguage.zhCN": "\u4E2D\u6587\u7A3F",
   "format.documentLanguage.en": "\u82F1\u6587\u7A3F",
@@ -2115,7 +2119,7 @@ async function discoverZoteroStyles(home = os.homedir(), environment = process.e
 }
 
 // src/main.ts
-var PLUGIN_VERSION = "1.6.0";
+var PLUGIN_VERSION = "1.6.1";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -2168,6 +2172,7 @@ var DEFAULT_TEMPLATE_FILE = "\u5BFC\u51FA\u683C\u5F0F\u6A21\u677F.docx";
 var DEFAULT_FORMAT = Object.freeze({
   preset_name: "\u5F53\u524D\u671F\u520A\u6A21\u677F",
   document_language: "zh-CN",
+  include_english_captions: true,
   east_asia_font: "\u5B8B\u4F53",
   western_font: "Times New Roman",
   body_size_pt: 12,
@@ -2668,6 +2673,11 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
     contentEl.style.maxHeight = "80vh";
     contentEl.style.overflowY = "auto";
     contentEl.createEl("h2", { text: t("format.title") });
+    new import_obsidian2.Setting(contentEl).setClass("md-export-output-name").setName(t("format.outputName.name")).setDesc(t("format.outputName.desc")).addText((text) => {
+      text.setPlaceholder(t("format.outputName.placeholder")).setValue(this.outputName).onChange((value) => {
+        this.outputName = value;
+      });
+    });
     const summary = contentEl.createDiv({ cls: "md-export-format-summary" });
     summary.style.cssText = "position:sticky;top:0;z-index:2;padding:12px;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:8px;white-space:pre-wrap;";
     const updateSummary = () => {
@@ -2722,6 +2732,9 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
       });
       if (this.config.document_language === "en-US") button.setCta();
     });
+    if (this.config.document_language !== "en-US") new import_obsidian2.Setting(contentEl).setName(t("format.englishCaptions.name")).setDesc(t("format.englishCaptions.desc")).addToggle((toggle) => toggle.setValue(this.config.include_english_captions !== false).onChange((value) => {
+      this.config.include_english_captions = value;
+    }));
     contentEl.createEl("p", {
       text: t("format.intro", {
         summary: formatSummary(this.defaultCommandFormat(), t)
@@ -2744,12 +2757,6 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
       if (reflowEnabled) {
         button.setCta();
       }
-    });
-    new import_obsidian2.Setting(contentEl).setName(t("format.outputName.name")).setDesc(t("format.outputName.desc")).addText((text) => {
-      text.inputEl.style.width = "min(420px, 52vw)";
-      text.setPlaceholder(t("format.outputName.placeholder")).setValue(this.outputName).onChange((value) => {
-        this.outputName = value;
-      });
     });
     new import_obsidian2.Setting(contentEl).setName(t("format.preset.name")).setDesc(t("format.preset.desc")).addDropdown((dropdown) => {
       dropdown.addOption("__default__", t("format.preset.default"));

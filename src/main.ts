@@ -37,7 +37,7 @@ import { discoverZoteroStyles } from "./zotero-styles";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.6.0";
+const PLUGIN_VERSION = "1.6.1";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -92,6 +92,7 @@ const DEFAULT_TEMPLATE_FILE = "导出格式模板.docx";
 const DEFAULT_FORMAT = Object.freeze({
   preset_name: "当前期刊模板",
   document_language: "zh-CN",
+  include_english_captions: true,
   east_asia_font: "宋体",
   western_font: "Times New Roman",
   body_size_pt: 12,
@@ -727,6 +728,18 @@ class FormatSettingsModal extends Modal {
     contentEl.style.maxHeight = "80vh";
     contentEl.style.overflowY = "auto";
     contentEl.createEl("h2", { text: t("format.title") });
+    new Setting(contentEl)
+      .setClass("md-export-output-name")
+      .setName(t("format.outputName.name"))
+      .setDesc(t("format.outputName.desc"))
+      .addText((text) => {
+        text
+          .setPlaceholder(t("format.outputName.placeholder"))
+          .setValue(this.outputName)
+          .onChange((value) => {
+            this.outputName = value;
+          });
+      });
     const summary=contentEl.createDiv({cls:"md-export-format-summary"});
     summary.style.cssText="position:sticky;top:0;z-index:2;padding:12px;background:var(--background-secondary);border:1px solid var(--background-modifier-border);border-radius:8px;white-space:pre-wrap;";
     const updateSummary=()=>{
@@ -793,6 +806,11 @@ class FormatSettingsModal extends Modal {
           });
         if (this.config.document_language === "en-US") button.setCta();
       });
+    if (this.config.document_language !== "en-US") new Setting(contentEl)
+      .setName(t("format.englishCaptions.name"))
+      .setDesc(t("format.englishCaptions.desc"))
+      .addToggle(toggle=>toggle.setValue(this.config.include_english_captions !== false)
+        .onChange(value=>{this.config.include_english_captions=value;}));
     contentEl.createEl("p", {
       text: t("format.intro", {
         summary: formatSummary(this.defaultCommandFormat(), t)
@@ -822,19 +840,6 @@ class FormatSettingsModal extends Modal {
         if (reflowEnabled) {
           button.setCta();
         }
-      });
-
-    new Setting(contentEl)
-      .setName(t("format.outputName.name"))
-      .setDesc(t("format.outputName.desc"))
-      .addText((text) => {
-        text.inputEl.style.width = "min(420px, 52vw)";
-        text
-          .setPlaceholder(t("format.outputName.placeholder"))
-          .setValue(this.outputName)
-          .onChange((value) => {
-            this.outputName = value;
-          });
       });
 
     new Setting(contentEl)

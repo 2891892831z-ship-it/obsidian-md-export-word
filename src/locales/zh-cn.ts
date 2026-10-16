@@ -92,6 +92,8 @@ export const zhCN = {
   "format.bodyLineSpacing.name": "正文行距",
   "format.bodyIndent.name": "正文首行缩进",
   "format.documentLanguage.name": "稿件语言",
+  "format.englishCaptions.name": "包含英文图题／表题",
+  "format.englishCaptions.desc": "默认开启，导出稿件中已有的对应英文题名。关闭后仅从本次 Word 输出中省略 Figure Caption EN 和 Table Caption EN 题注块，不修改 Markdown，也不自动生成翻译。可保存到格式方案。",
   "format.documentLanguage.desc": "默认沿用笔记 lang；英文稿首行缩进两个半角字符宽（1 em）、全字体新罗马，中文稿首行缩进两个全角字宽（2 em）。正文均两端对齐，可继续调整。",
   "format.documentLanguage.zhCN": "中文稿",
   "format.documentLanguage.en": "英文稿",

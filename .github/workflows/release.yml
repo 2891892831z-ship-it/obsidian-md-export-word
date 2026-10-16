@@ -90,6 +90,7 @@ jobs:
           python scripts\smoke-runtime.py `
             --pandoc "${{ steps.windows-binaries.outputs.pandoc }}" `
             --crossref "${{ steps.windows-binaries.outputs.crossref }}"
+          python scripts\test-english-caption-option.py --pandoc "${{ steps.windows-binaries.outputs.pandoc }}"
 
       - name: Build Windows x64 runtime
         shell: pwsh
@@ -203,6 +204,7 @@ jobs:
           python scripts/smoke-runtime.py \
             --pandoc "${{ steps.macos-binaries.outputs.pandoc }}" \
             --crossref "${{ steps.macos-binaries.outputs.crossref }}"
+          python scripts/test-english-caption-option.py --pandoc "${{ steps.macos-binaries.outputs.pandoc }}"
 
       - name: Build macOS runtime
         shell: bash
