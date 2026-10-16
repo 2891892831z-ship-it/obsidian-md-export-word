@@ -5694,6 +5694,15 @@ def run_pandoc(
     # variables for its loopback RPC while preserving HTTPS proxy settings.
     for proxy_key in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         env.pop(proxy_key, None)
+    # Any LC_ALL/LC_CTYPE (including the glibc-only C.UTF-8, which macOS
+    # does not recognize) makes this Pandoc build decode the strings it
+    # exchanges with Lua filters under a restricted locale. Better BibTeX
+    # queries containing non-ASCII citekeys then fail wholesale: the whole
+    # cluster falls back to literal [@key] text and no Word field is
+    # generated. Drop the locale variables so Pandoc uses its own UTF-8
+    # handling (verified: Chinese citekeys recover immediately).
+    for locale_key in ("LC_ALL", "LC_CTYPE"):
+        env.pop(locale_key, None)
     result = subprocess.run(
         command,
         cwd=vault_root,
