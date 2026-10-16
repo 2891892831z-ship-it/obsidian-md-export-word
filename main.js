@@ -2119,7 +2119,7 @@ async function discoverZoteroStyles(home = os.homedir(), environment = process.e
 }
 
 // src/main.ts
-var PLUGIN_VERSION = "1.6.1";
+var PLUGIN_VERSION = "1.6.2";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -2395,11 +2395,38 @@ function markdownArticleTitle(source, fallback) {
       }
     }
   }
+  let fence = "", fenceLength = 0, inComment = "", inMath = false;
   for (const line of lines.slice(bodyStart)) {
-    const match = line.match(/^\s*#\s+(.+?)\s*$/);
+    const delimiter = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      if (delimiter && delimiter[1][0] === fence && delimiter[1].length >= fenceLength && !delimiter[2].trim()) fence = "";
+      continue;
+    }
+    if (inMath) {
+      if (line.trim() === "$$") inMath = false;
+      continue;
+    }
+    if (inComment || line.includes("<!--") || line.includes("%%")) {
+      if (inComment) {
+        if (line.includes(inComment)) inComment = "";
+      } else if (line.includes("<!--")) inComment = line.split("<!--")[1].includes("-->") ? "" : "-->";
+      else if ((line.match(/%%/g) || []).length % 2) inComment = "%%";
+      continue;
+    }
+    if (delimiter) {
+      fence = delimiter[1][0];
+      fenceLength = delimiter[1].length;
+      continue;
+    }
+    if (line.trim() === "$$") {
+      inMath = true;
+      continue;
+    }
+    const match = line.match(/^ {0,3}#\s+(.+?)\s*$/);
     if (match) {
       const title = visibleMarkdownHeading(match[1]);
       if (title) {
+        if (metadataTitle && (/^(?:第\s*[零〇一二三四五六七八九十百千\d]+\s*[章节篇部]|chapter\s+(?:\d+|[ivxlcdm]+)\b)/i.test(title) || /^(?:摘要|abstract)$/i.test(title))) return metadataTitle;
         return title;
       }
     }

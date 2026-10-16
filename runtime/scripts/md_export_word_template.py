@@ -1458,9 +1458,40 @@ def suppress_frontmatter_title_when_h1_exists(
 
     document_title = ""
     heading_index: int | None = None
+    fence = ""
+    fence_length = 0
+    in_comment: str | bool = False
+    in_math = False
     for index in range(body_start, len(lines)):
         line = lines[index]
-        match = re.match(r"^\s*#\s+(.+?)\s*$", line)
+        delimiter = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence:
+            if delimiter:
+                marker, tail = delimiter.groups()
+                if marker[0] == fence and len(marker) >= fence_length and not tail.strip():
+                    fence = ""
+            continue
+        if in_math:
+            if line.strip() == "$$":
+                in_math = False
+            continue
+        if in_comment or "<!--" in line or "%%" in line:
+            if in_comment:
+                if in_comment in line:
+                    in_comment = False
+            elif "<!--" in line:
+                in_comment = False if "-->" in line.split("<!--", 1)[1] else "-->"
+            elif line.count("%%") % 2:
+                in_comment = "%%"
+            continue
+        if delimiter:
+            marker, _ = delimiter.groups()
+            fence, fence_length = marker[0], len(marker)
+            continue
+        if line.strip() == "$$":
+            in_math = True
+            continue
+        match = re.match(r"^ {0,3}#\s+(.+?)\s*$", line)
         if match:
             document_title = visible_markdown_heading(match.group(1))
             heading_index = index
@@ -1480,6 +1511,15 @@ def suppress_frontmatter_title_when_h1_exists(
         return text, metadata_title, False
     if frontmatter_end is None:
         return text, document_title, False
+
+    chapter_heading = bool(re.match(
+        r"^(?:第\s*[零〇一二三四五六七八九十百千\d]+\s*[章节篇部]|chapter\s+(?:\d+|[ivxlcdm]+)\b)",
+        document_title, re.IGNORECASE,
+    ))
+    if chapter_heading and metadata_title and document_title.casefold() != metadata_title.casefold():
+        # An explicit chapter heading plus a distinct metadata title is strong
+        # evidence of a thesis; H1 count alone also matches ordinary articles.
+        return text, metadata_title, False
 
     if (
         heading_index is not None
@@ -2074,10 +2114,10 @@ def load_citekey_aliases(ast: dict[str, Any]) -> dict[str, str]:
             )
         if source == target:
             raise ExportError(f"zotero-citekey-aliases 中 @{source} 指向自身")
-        if re.match(r"^(?:fig|tbl|eq):", source, re.IGNORECASE) or re.match(
-            r"^(?:fig|tbl|eq):", target, re.IGNORECASE
+        if re.match(r"^(?:fig|tbl|eq|sec|lst):", source, re.IGNORECASE) or re.match(
+            r"^(?:fig|tbl|eq|sec|lst):", target, re.IGNORECASE
         ):
-            raise ExportError("图、表和公式交叉引用不能设置为 Zotero citekey 别名")
+            raise ExportError("图、表、公式和章节等交叉引用不能设置为 Zotero citekey 别名")
         aliases[source] = target
 
     resolved: dict[str, str] = {}
@@ -2238,7 +2278,7 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
                 citation
                 for citation in content[0]
                 if not re.match(
-                    r"^(?:fig|tbl|eq):",
+                    r"^(?:fig|tbl|eq|sec|lst):",
                     citation.get("citationId", ""),
                     re.IGNORECASE,
                 )
@@ -2311,7 +2351,7 @@ def unresolved_citation_cluster_count(
             citation.get("citationId", "")
             for citation in citations
             if not re.match(
-                r"^(?:fig|tbl|eq):",
+                r"^(?:fig|tbl|eq|sec|lst):",
                 citation.get("citationId", ""),
                 re.IGNORECASE,
             )
@@ -2449,7 +2489,7 @@ def valid_caption_text(text: str, titles: tuple[str, ...]) -> bool:
     )
     return bool(
         re.match(
-            rf"^(?:{title_pattern})\s*\d+(?:[.:：])?\s+\S",
+            rf"^(?:{title_pattern})\s*\d+(?:[.\-—–]\d+)*(?:[.:：])?\s+\S",
             text,
             flags=re.IGNORECASE,
         )
@@ -3065,6 +3105,8 @@ def wrap_numbered_display_equations(
         ".//w:p[./m:oMathPara]", namespaces=NS
     )
     for paragraph in candidates:
+        if any(is_equation_layout_table(table) for table in paragraph.xpath("ancestor::w:tbl", namespaces=NS)):
+            continue
         math = paragraph.find("m:oMathPara/m:oMath", namespaces=NS)
         if math is None:
             continue
@@ -3085,9 +3127,23 @@ def wrap_numbered_display_equations(
                 number = match.group(1)
                 break
         if split_index is None:
-            continue
-        for child in children[split_index:]:
-            math.remove(child)
+            # Some pandoc-crossref outputs omit the ASCII "(n)" from
+            # the OMML equation and leave an eq: bookmark instead.
+            # For equations carrying that bookmark but no visible number,
+            # rebuild the 1x2 numbering layout from the number sequence
+            # derived on the Markdown side (equation_numbers), in document
+            # order.
+            if equation_numbers is None or wrapped >= len(equation_numbers):
+                continue
+            if not paragraph.xpath(
+                './w:bookmarkStart[starts-with(@w:name, "eq:")]',
+                namespaces=NS,
+            ):
+                continue
+            number = str(equation_numbers[wrapped])
+        else:
+            for child in children[split_index:]:
+                math.remove(child)
 
         table = etree.Element(W("tbl"))
         tblpr = etree.SubElement(table, W("tblPr"))
@@ -5437,8 +5493,12 @@ def validate_docx(
         # Citation field counts and payload checks below validate completeness.
         for paragraph in document.xpath(".//w:p", namespaces=NS):
             visible_text = paragraph_text(paragraph)
+            # Only a leftover space after a Zotero manual-refresh
+            # placeholder (which always ends with "]>") is an error. A
+            # bare ">" followed by CJK is legitimate comparison prose
+            # (e.g. 有机质 > 亲油改性石英).
             if re.search(
-                r">\s+[\u3400-\u9fff，。；：？！、]", visible_text
+                r"\]>\s+[\u3400-\u9fff，。；：？！、]", visible_text
             ):
                 errors.append("存在 Zotero 引文后普通空格")
                 break
@@ -5694,6 +5754,11 @@ def run_pandoc(
     # variables for its loopback RPC while preserving HTTPS proxy settings.
     for proxy_key in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         env.pop(proxy_key, None)
+    # Avoid inherited locale overrides that can interfere with non-ASCII
+    # citekeys in Pandoc/Lua on macOS (reported in PR #12). Only the child
+    # environment changes; keep the application's locale settings intact.
+    for locale_key in ("LC_ALL", "LC_CTYPE"):
+        env.pop(locale_key, None)
     result = subprocess.run(
         command,
         cwd=vault_root,

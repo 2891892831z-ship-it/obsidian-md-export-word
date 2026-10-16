@@ -48,6 +48,8 @@ jobs:
         run: |
           python scripts/test-manuscript-language.py
           python scripts/test-export-review.py
+          python scripts/test-thesis-regressions.py
+          node scripts/test-article-title.mjs
 
       - name: Build plugin
         run: npm run build
