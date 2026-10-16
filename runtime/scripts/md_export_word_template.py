@@ -5467,8 +5467,12 @@ def validate_docx(
         # Citation field counts and payload checks below validate completeness.
         for paragraph in document.xpath(".//w:p", namespaces=NS):
             visible_text = paragraph_text(paragraph)
+            # Only a leftover space after a Zotero manual-refresh
+            # placeholder (which always ends with "]>") is an error. A
+            # bare ">" followed by CJK is legitimate comparison prose
+            # (e.g. 有机质 > 亲油改性石英).
             if re.search(
-                r">\s+[\u3400-\u9fff，。；：？！、]", visible_text
+                r"\]>\s+[\u3400-\u9fff，。；：？！、]", visible_text
             ):
                 errors.append("存在 Zotero 引文后普通空格")
                 break
