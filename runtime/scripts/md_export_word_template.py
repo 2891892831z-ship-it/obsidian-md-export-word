@@ -2074,10 +2074,10 @@ def load_citekey_aliases(ast: dict[str, Any]) -> dict[str, str]:
             )
         if source == target:
             raise ExportError(f"zotero-citekey-aliases 中 @{source} 指向自身")
-        if re.match(r"^(?:fig|tbl|eq):", source, re.IGNORECASE) or re.match(
-            r"^(?:fig|tbl|eq):", target, re.IGNORECASE
+        if re.match(r"^(?:fig|tbl|eq|sec|lst):", source, re.IGNORECASE) or re.match(
+            r"^(?:fig|tbl|eq|sec|lst):", target, re.IGNORECASE
         ):
-            raise ExportError("图、表和公式交叉引用不能设置为 Zotero citekey 别名")
+            raise ExportError("图、表、公式和章节等交叉引用不能设置为 Zotero citekey 别名")
         aliases[source] = target
 
     resolved: dict[str, str] = {}
@@ -2238,7 +2238,7 @@ def ast_inventory(ast: dict[str, Any]) -> dict[str, Any]:
                 citation
                 for citation in content[0]
                 if not re.match(
-                    r"^(?:fig|tbl|eq):",
+                    r"^(?:fig|tbl|eq|sec|lst):",
                     citation.get("citationId", ""),
                     re.IGNORECASE,
                 )
@@ -2311,7 +2311,7 @@ def unresolved_citation_cluster_count(
             citation.get("citationId", "")
             for citation in citations
             if not re.match(
-                r"^(?:fig|tbl|eq):",
+                r"^(?:fig|tbl|eq|sec|lst):",
                 citation.get("citationId", ""),
                 re.IGNORECASE,
             )
