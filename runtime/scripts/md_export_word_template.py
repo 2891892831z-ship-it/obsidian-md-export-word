@@ -3075,6 +3075,7 @@ def wrap_numbered_display_equations(
     narrow second cell contains the flush-right number.
     """
     wrapped = 0
+    bookmark_index = 0
     candidates = document_root.xpath(
         ".//w:p[./m:oMathPara]", namespaces=NS
     )
@@ -3099,9 +3100,24 @@ def wrap_numbered_display_equations(
                 number = match.group(1)
                 break
         if split_index is None:
-            continue
-        for child in children[split_index:]:
-            math.remove(child)
+            # pandoc-crossref 0.3.2x no longer appends the ASCII "(n)" to
+            # the OMML equation; it only leaves an eq: bookmark on the
+            # paragraph. For un-numbered equations carrying that bookmark,
+            # rebuild the 1x2 numbering layout from the number sequence
+            # derived on the Markdown side (equation_numbers), in document
+            # order.
+            if equation_numbers is None or bookmark_index >= len(equation_numbers):
+                continue
+            if not paragraph.xpath(
+                './w:bookmarkStart[starts-with(@w:name, "eq:")]',
+                namespaces=NS,
+            ):
+                continue
+            number = str(equation_numbers[bookmark_index])
+            bookmark_index += 1
+        else:
+            for child in children[split_index:]:
+                math.remove(child)
 
         table = etree.Element(W("tbl"))
         tblpr = etree.SubElement(table, W("tblPr"))
