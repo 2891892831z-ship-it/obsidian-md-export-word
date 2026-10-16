@@ -2449,7 +2449,7 @@ def valid_caption_text(text: str, titles: tuple[str, ...]) -> bool:
     )
     return bool(
         re.match(
-            rf"^(?:{title_pattern})\s*\d+(?:[.:：])?\s+\S",
+            rf"^(?:{title_pattern})\s*\d+(?:[.\-—–]\d+)*(?:[.:：])?\s+\S",
             text,
             flags=re.IGNORECASE,
         )
