@@ -1,5 +1,5 @@
 ---
-date modified: 2026.10.16 18:30:19
+date modified: 2026.10.22 11:49:41
 ---
 
 # Changelog
@@ -14,6 +14,10 @@ date modified: 2026.10.16 18:30:19
 - 为 Linux 增加独立运行时；
 - 把遗留 UI 代码完全迁移为严格 TypeScript；
 - 增加模板可视化预览。
+
+### Fixed
+
+- 句内引用（`zotero-author-in-text: true`）的域外作者名不再一律追加半角空格：仅当作者名含拉丁字母时保留间隔（`Smith (2024)`），中文作者与全角年份括号之间不再出现多余空格（`李剑等（2024）`），并与 Word 中 Zotero Refresh 后的排布一致。
 
 ## [1.6.1] - 2026-10-16
 

@@ -1895,7 +1895,13 @@ local function zotero_ref(cite)
           if authors == nil or authors == '' then
             return cite
           else
-            author_in_text = pandoc.utils.stringify(pandoc.Str(authors)) .. ' '
+            author_in_text = pandoc.utils.stringify(pandoc.Str(authors))
+            -- keep the separating space for Latin author names (Smith
+            -- (2024)) but not before the full-width parenthesis that
+            -- follows CJK author names (李剑等（2024）)
+            if author_in_text:match('[A-Za-z]') then
+              author_in_text = author_in_text .. ' '
+            end
             author_in_text = '<w:r><w:t xml:space="preserve">' .. utils.xmlescape(author_in_text) .. '</w:t></w:r>'
             citation['suppress-author'] = true
           end
