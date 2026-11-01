@@ -2119,7 +2119,7 @@ async function discoverZoteroStyles(home = os.homedir(), environment = process.e
 }
 
 // src/main.ts
-var PLUGIN_VERSION = "1.6.2";
+var PLUGIN_VERSION = "1.6.3";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -2376,7 +2376,7 @@ function formatSummary(config, t = DEFAULT_TRANSLATOR) {
   });
 }
 function visibleMarkdownHeading(text) {
-  return String(text || "").trim().replace(/\s+#+\s*$/, "").replace(/[*_`~]/g, "").trim();
+  return String(text || "").trim().replace(/\s+#+\s*$/, "").replace(/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>/g, "").replace(/[*_`~]/g, "").trim();
 }
 function markdownArticleTitle(source, fallback) {
   const lines = String(source || "").split(/\r?\n/);

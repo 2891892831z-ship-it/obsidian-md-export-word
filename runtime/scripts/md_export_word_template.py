@@ -114,7 +114,10 @@ class ExportError(RuntimeError):
 
 DEFAULT_FORMAT_CONFIG: dict[str, Any] = {
     "preset_name": "当前期刊模板",
-    "document_language": "zh-CN",
+    # 默认留空：未显式配置时跟随 Markdown frontmatter 的 lang，
+    # 使 language_aware_format_config 的英文文档分支（西文字体
+    # 填满四个字体槽）得以按文档语言自动生效。
+    "document_language": "",
     "include_english_captions": True,
     "east_asia_font": "宋体",
     "western_font": "Times New Roman",
@@ -609,6 +612,19 @@ def selected_csl_metadata(value, vault_root):
     return csl_path.resolve(), style_id.strip()
 
 
+def csl_file_language(csl_path):
+    """读取 CSL 文件头部判断样式语言：default-locale/xml:lang 为 zh-* 返回 "zh"。"""
+    try:
+        head = csl_path.read_text(encoding="utf-8", errors="replace")[:3000]
+    except OSError:
+        return ""
+    if re.search('default-locale\s*=\s*"zh', head) or re.search(
+        'xml:lang\s*=\s*"zh', head
+    ):
+        return "zh"
+    return "en"
+
+
 def zotero_preference_properties(
     custom_root: etree._Element,
 ) -> list[etree._Element]:
@@ -1089,7 +1105,9 @@ def normalize_paragraph_text(
             if delimiter_index is not None:
                 caption_delimiter_index = delimiter_index
                 protected_indexes.add(delimiter_index)
-                items[delimiter_index]["char"] = " "
+                # 保留原有分隔符（如 squeeze 产出的全角冒号），不再强制空格
+                if items[delimiter_index]["char"] == ":":
+                    items[delimiter_index]["char"] = "："
             for index in range(caption_match.end()):
                 if index not in protected_indexes:
                     items[index]["delete"] = True
@@ -1170,6 +1188,12 @@ def normalize_paragraph_text(
         elif prev_char.isdigit() and UNIT_RE.match(tail):
             remove = False
         elif is_cjk(prev_char) and is_cjk(next_char):
+            remove = True
+        elif (
+            prev_char in ("图", "表", "式", "章")
+            and next_char.isdigit()
+        ):
+            # 中文交叉引用前缀与编号之间不留空格（"图 1" -> "图1"）
             remove = True
 
         if remove:
@@ -1432,6 +1456,9 @@ def is_note_paragraph_text(text: str) -> bool:
 
 def visible_markdown_heading(text: str) -> str:
     value = re.sub(r"\s+#+\s*$", "", text.strip())
+    # Inline HTML such as CO<sub>2</sub> is invisible in Word; strip the tags
+    # so the expected title matches the exported paragraph text ("CO2").
+    value = re.sub(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>", "", value)
     return re.sub(r"[*_`~]", "", value).strip()
 
 
@@ -2489,7 +2516,7 @@ def valid_caption_text(text: str, titles: tuple[str, ...]) -> bool:
     )
     return bool(
         re.match(
-            rf"^(?:{title_pattern})\s*\d+(?:[.\-—–]\d+)*(?:[.:：])?\s+\S",
+            rf"^(?:{title_pattern})\s*\d+(?:[.\-—–]\d+)*(?:[.:：]\s*|\s+)\S",
             text,
             flags=re.IGNORECASE,
         )
@@ -4230,8 +4257,15 @@ def format_body_paragraphs(
 
 
 def patch_crossref_number_spacing(document, document_language):
-    """Use ordinary halfwidth spaces around generated figure/table references."""
-    separator = " "
+    """Normalize spacing around generated figure/table references.
+
+    中文排版：前缀（图/表/式）与编号之间不留空格（"图1"）；
+    英文前缀（Fig./Figure/Table/Equation）保留半角空格（"Fig. 1"）。
+    正则仍会吞掉前缀后已有空白，再按前缀语言回填。
+    """
+
+    def _separator_for(prefix: str) -> str:
+        return "" if prefix[0] in "图表式章" else " "
     for link in document.xpath(".//w:hyperlink[@w:anchor]", namespaces=NS):
         anchor = link.get(W("anchor"), "")
         if not re.match(r"^(?:fig|tbl|eq):", anchor):
@@ -4252,7 +4286,10 @@ def patch_crossref_number_spacing(document, document_language):
                 node = nodes[-1]
                 pattern = r"((?:图|表|式|Fig\.?|Figure|Table|Equation)s?)[\s\u3000]*$"
                 if re.search(pattern, node.text):
-                    node.text = re.sub(pattern, lambda match: match.group(1) + separator, node.text)
+                    def _repl(match: "re.Match[str]") -> str:
+                        return match.group(1) + _separator_for(match.group(1))
+
+                    node.text = re.sub(pattern, _repl, node.text)
                     node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
                     for whitespace in whitespace_nodes:
                         whitespace.text = ""
@@ -4262,7 +4299,7 @@ def patch_crossref_number_spacing(document, document_language):
         nodes = [node for node in paragraph.xpath("./w:r/w:t", namespaces=NS) if node.text]
         if nodes:
             nodes[0].text = re.sub(r"^(图|表)[\s\u3000]*(?=\d)",
-                                   lambda match: match.group(1) + separator, nodes[0].text)
+                                   lambda match: match.group(1), nodes[0].text)
 
 
 def render_csl_multilingual(pandoc, csl_path, language, references, clusters):
@@ -4353,6 +4390,31 @@ def render_zotero_results(raw_docx, pandoc, csl_path, language, temp_dir):
     if len(citations) != len(fields) or not bibliography:
         raise ExportError("作者—年份或参考文献渲染不完整，已停止导出")
     return {"citations": citations, "bibliography": bibliography}
+
+
+def normalize_zotero_run_fonts_english(document, western_font):
+    """英文文档：Zotero 域内 run 的 rFonts 四槽位统一为西文字体。
+
+    strict 校验要求英文文档引用括号 run 的 ascii/hAnsi/cs/eastAsia
+    全部等于西文字体且无 eastAsia hint；apply_zotero_results 复制的
+    原始 rPr 可能带中文字体（eastAsia=宋体），此处统一修正。
+    """
+    for field in field_inventory(document):
+        if "ZOTERO_ITEM" not in field["code"]:
+            continue
+        nodes = list(field["result_nodes"])
+        for node in nodes:
+            for run in node.xpath("ancestor-or-self::w:r", namespaces=NS):
+                rpr = run.find(W("rPr"))
+                if rpr is None:
+                    rpr = etree.Element(W("rPr"))
+                    run.insert(0, rpr)
+                fonts = rpr.find(W("rFonts"))
+                if fonts is None:
+                    fonts = etree.SubElement(rpr, W("rFonts"))
+                for slot in ("ascii", "hAnsi", "cs", "eastAsia"):
+                    fonts.set(W(slot), western_font)
+                fonts.attrib.pop(W("hint"), None)
 
 
 def apply_zotero_results(document, results, format_config):
@@ -4565,6 +4627,12 @@ def patch_docx(
         )
         scripts_before_results = script_run_counts(document)
         apply_zotero_results(document, source_inventory.get("citation_results"), format_config)
+        if is_english_document_language(
+            source_inventory.get("document_language", "")
+        ):
+            normalize_zotero_run_fonts_english(
+                document, str(format_config["western_font"])
+            )
         cluster_resize = fit_figure_caption_clusters(
             document, styles=styles, format_config=format_config)
         for key, value in cluster_resize.items():
@@ -5716,6 +5784,7 @@ def run_pandoc(
     pandoc: Path,
     crossref: Path,
     true_scripts: Path,
+    cjk_xref_squeeze: Path,
     zotero_filter: Path,
     template: Path,
     input_path: Path,
@@ -5737,6 +5806,9 @@ def run_pandoc(
         str(true_scripts),
         "--filter",
         str(crossref),
+        # 必须紧跟 pandoc-crossref 之后：压缩中文交叉引用前缀与编号间的空格
+        "--lua-filter",
+        str(cjk_xref_squeeze),
         "--lua-filter",
         str(zotero_filter),
         "--reference-doc",
@@ -5849,6 +5921,8 @@ def main() -> int:
         )
     )
     true_scripts = script_dir / "true_scripts.lua"
+    # 中文交叉引用空格压缩：把 pandoc-crossref 生成的 "图 1"（含 U+00A0）改为 "图1"
+    cjk_xref_squeeze = script_dir / "cjk-xref-squeeze.lua"
     zotero_filter = pandoc_root / "zotero.lua"
     template_value = args.template or os.environ.get("MD_EXPORT_WORD_TEMPLATE")
     if template_value:
@@ -5868,6 +5942,7 @@ def main() -> int:
         pandoc,
         crossref,
         true_scripts,
+        cjk_xref_squeeze,
         zotero_filter,
         template,
     ):
@@ -5946,8 +6021,36 @@ def main() -> int:
         selected_style_id = ""
         if selected_csl:
             selected_path, selected_style_id = selected_csl_metadata(selected_csl, vault_root)
-            ast.setdefault("meta", {})["csl"] = {"t":"MetaString", "c":str(selected_path)}
-            ast["meta"]["zotero-csl-style"] = {"t":"MetaString", "c":selected_style_id}
+            # 语言匹配保护：英文稿件 + 中文样式时，引用会被渲染成全角括号，
+            # 与英文文档校验冲突；若稿件 frontmatter 配置了自己的 csl，则自动沿用。
+            doc_lang = normalize_document_language(
+                stringify_metadata(ast.get("meta", {}).get("lang")) or ""
+            )
+            use_selected = True
+            if (
+                is_english_document_language(doc_lang)
+                and csl_file_language(Path(selected_path)) == "zh"
+            ):
+                manuscript_csl = stringify_metadata(
+                    ast.get("meta", {}).get("csl")
+                )
+                if manuscript_csl and str(Path(manuscript_csl).resolve()) != str(selected_path):
+                    use_selected = False
+                    print(
+                        "提示：所选引用样式（" + selected_style_id + "）为中文样式，"
+                        "与英文稿件不匹配；已自动沿用稿件设置的引用样式：" + manuscript_csl
+                    )
+            if use_selected:
+                ast.setdefault("meta", {})["csl"] = {"t":"MetaString", "c":str(selected_path)}
+                ast["meta"]["zotero-csl-style"] = {"t":"MetaString", "c":selected_style_id}
+            else:
+                doc_style_id = ""
+                try:
+                    _, doc_style_id = selected_csl_metadata(manuscript_csl, vault_root)
+                except ExportError:
+                    pass
+                if doc_style_id:
+                    ast["meta"]["zotero-csl-style"] = {"t":"MetaString", "c":doc_style_id}
         else:
             manuscript_csl = stringify_metadata(ast.get("meta", {}).get("csl"))
             # Follow the manuscript's real CSL ID, not the injected APA fallback.
@@ -6112,6 +6215,7 @@ def main() -> int:
             pandoc=pandoc,
             crossref=crossref,
             true_scripts=true_scripts,
+            cjk_xref_squeeze=cjk_xref_squeeze,
             zotero_filter=effective_zotero_filter,
             template=template,
             input_path=pandoc_input,
@@ -6141,7 +6245,22 @@ def main() -> int:
         if display_mode == "rendered":
             render_override = os.environ.get("MD_EXPORT_WORD_CSL_RENDER", "").strip()
             if render_override:
-                csl_path, _ = selected_csl_metadata(render_override, vault_root)
+                override_path, _ = selected_csl_metadata(render_override, vault_root)
+                # 语言匹配保护（与 selected_csl 分支一致）：英文稿件 +
+                # 中文渲染样式会把引用域渲染成全角括号，忽略该覆盖。
+                if (
+                    is_english_document_language(
+                        inventory.get("document_language", "")
+                    )
+                    and csl_file_language(Path(override_path)) == "zh"
+                    and str(override_path) != str(csl_path)
+                ):
+                    print(
+                        "提示：渲染样式覆盖为中文样式，与英文稿件不匹配；"
+                        "已忽略，改用稿件引用样式渲染引用域。"
+                    )
+                else:
+                    csl_path = override_path
             try:
                 inventory["citation_results"] = render_zotero_results(
                     raw_docx, pandoc, csl_path, str(format_config.get("document_language", "zh-CN")), temp_dir

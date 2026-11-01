@@ -73,6 +73,7 @@ const required = [
   "runtime/scripts/doctor.py",
   "runtime/scripts/doctor.sh",
   "runtime/scripts/true_scripts.lua",
+  "runtime/scripts/cjk-xref-squeeze.lua",
   "runtime/zotero.lua",
   "runtime/Word-Template/导出格式模板.docx",
   "README.md",

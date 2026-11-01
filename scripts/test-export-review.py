@@ -10,7 +10,7 @@ m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 text,_=m.normalize_markdown_citation_spacing('English prose [@existing].\n中文正文 [@existing] 后续正文。\n')
 assert 'prose [@existing]' in text
 assert '中文正文[@existing]后续正文' in text
-for language,label,separator in [('en-US','Table',' '),('zh-CN','图',' ')]:
+for language,label,separator in [('en-US','Table',' '),('zh-CN','图','')]:
     document=etree.fromstring(('<w:document xmlns:w="'+m.W_NS+'"><w:body><w:p>'
         '<w:r><w:t>正文 </w:t><w:t>'+label+'</w:t><w:t> </w:t></w:r>'
         '<w:r><w:t> </w:t></w:r><w:hyperlink w:anchor="fig:test"><w:r><w:t>1</w:t></w:r></w:hyperlink>'

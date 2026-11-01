@@ -29,10 +29,13 @@ for text, title, suppressed in cases:
     else:
         assert result == text
 
-for title in ['图1-1: 题名', '图 1.2 题名', 'Figure 2–3 Caption', 'Table 3—2 Caption']:
+for title in ['图1-1: 题名', '图 1.2 题名', 'Figure 2–3 Caption', 'Table 3—2 Caption', '图1 题名', '图1：题名']:
     assert m.valid_caption_text(title, ('图', 'Figure', 'Table')), title
-for title in ['图 1- Caption', 'Figure Caption', '图 1-2']:
+for title in ['图 1- Caption', 'Figure Caption', '图 1-2', '图1-']:
     assert not m.valid_caption_text(title, ('图', 'Figure', 'Table')), title
+
+assert m.visible_markdown_heading('2026 年 CO<sub>2</sub>赋存测试 ##') == '2026 年 CO2赋存测试'
+assert m.visible_markdown_heading('**m<sup>3</sup>** a<b') == 'm3 a<b'
 
 citations = [{'citationId': key, 'citationMode': {'t':'NormalCitation'}} for key in ['sec:intro', 'lst:code', 'fig:a', 'tbl:a', 'eq:a', 'real']]
 ast = {'meta':{}, 'blocks':[{'t':'Para', 'c':[{'t':'Cite', 'c':[citations, []]}]}]}
@@ -52,12 +55,16 @@ with tempfile.TemporaryDirectory() as temporary:
         assert 'LC_CTYPE' not in kwargs['env']
         assert kwargs['env']['LANG'] == 'zh_CN.UTF-8'
         assert str(folder / '中文稿件.md') in command
+        squeeze = command.index(str(folder / 'squeeze.lua'))
+        assert command[squeeze - 1] == '--lua-filter'
+        assert command.index(str(folder / 'crossref')) < squeeze
         output.touch()
         return SimpleNamespace(returncode=0, stdout='', stderr='')
     with patch.dict(os.environ, {'LC_ALL':'C.UTF-8', 'LC_CTYPE':'C', 'LANG':'zh_CN.UTF-8'}):
         with patch.object(m.subprocess, 'run', side_effect=fake_run):
             m.run_pandoc(pandoc=folder/'pandoc', crossref=folder/'crossref',
-                true_scripts=folder/'scripts.lua', zotero_filter=folder/'zotero.lua',
+                true_scripts=folder/'scripts.lua', cjk_xref_squeeze=folder/'squeeze.lua',
+                zotero_filter=folder/'zotero.lua',
                 template=folder/'template.docx', input_path=folder/'中文稿件.md',
                 input_format='markdown', raw_docx=output, vault_root=folder, md_parent=folder)
         assert os.environ['LC_ALL'] == 'C.UTF-8'

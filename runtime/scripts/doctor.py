@@ -53,6 +53,9 @@ def main() -> int:
         "True-script Lua filter": RUNTIME_ROOT
         / "scripts"
         / "true_scripts.lua",
+        "CJK cross-reference Lua filter": RUNTIME_ROOT
+        / "scripts"
+        / "cjk-xref-squeeze.lua",
         "Zotero Lua filter": RUNTIME_ROOT / "zotero.lua",
         "Pandoc": RUNTIME_ROOT
         / "Pandoc&pandoc-crossref"

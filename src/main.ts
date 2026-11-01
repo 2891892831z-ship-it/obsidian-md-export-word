@@ -37,7 +37,7 @@ import { discoverZoteroStyles } from "./zotero-styles";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.6.2";
+const PLUGIN_VERSION = "1.6.3";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -328,6 +328,7 @@ function visibleMarkdownHeading(text) {
   return String(text || "")
     .trim()
     .replace(/\s+#+\s*$/, "")
+    .replace(/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>/g, "")
     .replace(/[*_`~]/g, "")
     .trim();
 }

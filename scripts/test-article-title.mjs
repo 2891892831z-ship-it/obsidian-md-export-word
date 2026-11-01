@@ -16,7 +16,9 @@ for (const [markdown, expected] of [
   ["---\ntitle: Metadata\n---\n````\n<!--\n%%\n$$\n```\n# Fake\n````\n# Actual title", "Actual title"],
   ["<!--\n```\n# Comment\n-->\n%%\n# Comment\n%%\n$$\n<!--\n# Math\n$$\n# Actual title", "Actual title"],
   ["Body only", "Fallback"],
+  ["# 2026 年 CO<sub>2</sub>赋存量化测试", "2026 年 CO2赋存量化测试"],
+  ["# m<sup>3</sup> 与 <span class=\"x\">H<sub>2</sub>O</span>", "m3 与 H2O"],
 ]) {
   assert.equal(context.markdownArticleTitle(markdown, "Fallback"), expected);
 }
-console.log("Article and thesis default filenames: 7 cases passed.");
+console.log("Article and thesis default filenames: 9 cases passed.");
