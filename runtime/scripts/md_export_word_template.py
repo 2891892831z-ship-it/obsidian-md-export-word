@@ -1385,6 +1385,33 @@ def split_quote_runs(
     return split_count
 
 
+def apply_caption_language_defaults(
+    ast: dict[str, Any], format_config: dict[str, Any]
+) -> None:
+    """Localize crossref captions in the export AST, never in the source note.
+
+    The effective export language (including the dialog override) takes priority.
+    Explicit manuscript metadata, even an empty delimiter, always wins.
+    English and other explicit languages keep Pandoc-crossref's defaults.
+    """
+    meta = ast.setdefault("meta", {})
+    language = normalize_document_language(
+        format_config.get("document_language")
+        or stringify_metadata(meta.get("lang"))
+    )
+    if language and language.split("-")[0] != "zh":
+        return
+    defaults = {
+        "figureTitle": "图",
+        "tableTitle": "表",
+        "figPrefix": "图",
+        "tblPrefix": "表",
+        "titleDelim": " ",
+    }
+    for key, value in defaults.items():
+        meta.setdefault(key, {"t": "MetaString", "c": value})
+
+
 def inject_metadata(text: str) -> str:
     lines = text.splitlines()
     if lines and lines[0].strip() == "---":
@@ -6063,6 +6090,7 @@ def main() -> int:
         format_config = language_aware_format_config(
             format_config, stringify_metadata(ast.get("meta", {}).get("lang"))
         )
+        apply_caption_language_defaults(ast, format_config)
         omitted_english_captions = filter_english_caption_blocks(ast, format_config)
         inventory = ast_inventory(ast)
         inventory["omitted_english_captions"] = omitted_english_captions
@@ -6125,15 +6153,13 @@ def main() -> int:
         )
         inventory["missing_citekeys"] = missing_keys
         inventory["unresolved_citation_clusters"] = unresolved_clusters
-        pandoc_input = prepared_md
-        pandoc_input_format = MARKDOWN_INPUT_FORMAT
-        if used_citekey_aliases or omitted_english_captions:
-            pandoc_input = temp_dir / "prepared-citekey-aliases.json"
-            pandoc_input.write_text(
-                json.dumps(ast, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            pandoc_input_format = "json"
+        # Always export the processed AST, including language and CSL defaults.
+        pandoc_input = temp_dir / "prepared-export.json"
+        pandoc_input.write_text(
+            json.dumps(ast, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        pandoc_input_format = "json"
         inventory["expected_zotero_fields"] = inventory["citation_clusters"]
         if missing_keys:
             compatible_ast = split_missing_citations_in_ast(
