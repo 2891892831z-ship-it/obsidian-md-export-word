@@ -29,7 +29,7 @@ for language, override, custom in [
     if custom:
         metadata += 'figureTitle: Custom\ntableTitle: Data\ntitleDelim: " - "\n'
     source = metadata + "---\n\n![Caption](unused.png){#fig:test}\n\n" + (
-        "See @fig:test and @tbl:test.\n\n"
+        "See @fig:test and @tbl:test.\n\n---\n\n> Quote\n>\n> ---\n\n"
         "| A | B |\n|---|---|\n| 1 | 2 |\n\n: Values {#tbl:test}\n"
     )
     result = subprocess.run(
@@ -37,6 +37,20 @@ for language, override, custom in [
         text=True, encoding="utf-8", capture_output=True, check=True,
     )
     document = json.loads(result.stdout)
+    original_metadata = json.loads(json.dumps(document["meta"]))
+    def count_rules(node):
+        if isinstance(node, dict):
+            return int(node.get("t") == "HorizontalRule") + sum(
+                count_rules(value) for value in node.values()
+            )
+        if isinstance(node, list):
+            return sum(count_rules(value) for value in node)
+        return 0
+    assert count_rules(document) == 2
+    module.omit_export_horizontal_rules(document)
+    assert count_rules(document) == 0
+    assert document["meta"] == original_metadata
+    assert any(block["t"] == "Table" for block in document["blocks"])
     config = module.language_aware_format_config(
         dict(module.DEFAULT_FORMAT_CONFIG, document_language=override), language
     )

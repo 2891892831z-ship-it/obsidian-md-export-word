@@ -1385,6 +1385,19 @@ def split_quote_runs(
     return split_count
 
 
+def omit_export_horizontal_rules(node: Any) -> None:
+    """Keep Markdown separators in the note, but omit them from Word exports."""
+    if isinstance(node, dict):
+        for value in node.values():
+            omit_export_horizontal_rules(value)
+    elif isinstance(node, list):
+        node[:] = [item for item in node if not (
+            isinstance(item, dict) and item.get("t") == "HorizontalRule"
+        )]
+        for item in node:
+            omit_export_horizontal_rules(item)
+
+
 def apply_caption_language_defaults(
     ast: dict[str, Any], format_config: dict[str, Any]
 ) -> None:
@@ -6090,6 +6103,7 @@ def main() -> int:
         format_config = language_aware_format_config(
             format_config, stringify_metadata(ast.get("meta", {}).get("lang"))
         )
+        omit_export_horizontal_rules(ast)
         apply_caption_language_defaults(ast, format_config)
         omitted_english_captions = filter_english_caption_blocks(ast, format_config)
         inventory = ast_inventory(ast)
