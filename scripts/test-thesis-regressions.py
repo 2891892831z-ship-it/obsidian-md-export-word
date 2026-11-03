@@ -17,10 +17,10 @@ cases = [
     ('---\ntitle: Article\n---\n# Article\n\n# Background\n\n# Methods\n', 'Article', True),
     ('---\ntitle: Thesis\n---\n# 第1章 绪论\n\n# 第2章 方法\n', 'Thesis', False),
     ('---\ntitle: Thesis\n---\n# Chapter I Introduction\n', 'Thesis', False),
-    ('---\ntitle: Article\n---\n# Abstract\n\n# Methods\n', 'Article', True),
-    ('---\ntitle: Metadata\n---\n````markdown\n# Chapter 1 Fake\n```\n# Fake again\n````\n<!--\n# Chapter 2 Comment\n-->\n$$\n# Chapter 3 Math\n$$\n# Actual title\n', 'Actual title', True),
+    ('---\ntitle: Article\n---\n# Abstract\n\n# Methods\n', 'Article', False),
+    ('---\ntitle: Metadata\n---\n````markdown\n# Chapter 1 Fake\n```\n# Fake again\n````\n<!--\n# Chapter 2 Comment\n-->\n$$\n# Chapter 3 Math\n$$\n# Actual title\n', 'Metadata', False),
 ]
-cases.append(('---\ntitle: Metadata\n---\n```\n<!--\n%%\n$$\n# Fake\n```\n# Actual title\n', 'Actual title', True))
+cases.append(('---\ntitle: Metadata\n---\n```\n<!--\n%%\n$$\n# Fake\n```\n# Actual title\n', 'Metadata', False))
 for text, title, suppressed in cases:
     result, actual, removed = m.suppress_frontmatter_title_when_h1_exists(text)
     assert (actual, removed) == (title, suppressed), (actual, removed)

@@ -126,6 +126,7 @@ DEFAULT_FORMAT_CONFIG: dict[str, Any] = {
     "body_first_line_chars": 2.0,
     "title_size_pt": 16.0,
     "title_line_spacing": 1.5,
+    "heading1_size_pt": 16.0,
     "heading2_size_pt": 14.0,
     "heading3_size_pt": 12.0,
     "heading4_size_pt": 12.0,
@@ -147,6 +148,7 @@ FORMAT_NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
     "body_first_line_chars": (0.0, 4.0),
     "title_size_pt": (5.0, 36.0),
     "title_line_spacing": (0.8, 3.0),
+    "heading1_size_pt": (5.0, 36.0),
     "heading2_size_pt": (5.0, 36.0),
     "heading3_size_pt": (5.0, 36.0),
     "heading4_size_pt": (5.0, 36.0),
@@ -1505,13 +1507,10 @@ def visible_markdown_heading(text: str) -> str:
 def suppress_frontmatter_title_when_h1_exists(
     text: str,
 ) -> tuple[str, str, bool]:
-    """Keep one meaningful document title in the temporary export copy.
+    """Preserve heading levels; only deduplicate an explicit metadata title.
 
-    Obsidian's frontmatter title remains untouched in the source file. Only
-    the temporary export copy drops the scalar ``title:`` entry when a body H1
-    exists, preventing Pandoc from emitting both a metadata title and the H1.
-    If the first H1 is an abstract heading, promote the metadata title to the
-    document H1 and retain the abstract heading as a section heading.
+    All H1s remain sections unless the first exactly matches title metadata.
+    Such a duplicate becomes a Title paragraph in the temporary export copy.
     """
     lines = text.splitlines()
     frontmatter_end: int | None = None
@@ -1574,35 +1573,14 @@ def suppress_frontmatter_title_when_h1_exists(
             if match and match.group(1) not in ("", "|", ">", "|-", ">-"):
                 metadata_title = match.group(1).strip().strip("\"'")
                 break
-    if not document_title:
-        return text, metadata_title, False
-    if frontmatter_end is None:
-        return text, document_title, False
-
-    chapter_heading = bool(re.match(
-        r"^(?:第\s*[零〇一二三四五六七八九十百千\d]+\s*[章节篇部]|chapter\s+(?:\d+|[ivxlcdm]+)\b)",
-        document_title, re.IGNORECASE,
-    ))
-    if chapter_heading and metadata_title and document_title.casefold() != metadata_title.casefold():
-        # An explicit chapter heading plus a distinct metadata title is strong
-        # evidence of a thesis; H1 count alone also matches ordinary articles.
+    if not metadata_title or heading_index is None or document_title.casefold() != metadata_title.casefold():
         return text, metadata_title, False
 
-    if (
-        heading_index is not None
-        and document_title.casefold() in {"摘要", "abstract"}
-        and metadata_title
-    ):
-        section_heading = re.sub(
-            r"^(\s*)#(\s+)", r"\1##\2", lines[heading_index], count=1
-        )
-        lines[heading_index : heading_index + 1] = [
-            f"# {metadata_title}",
-            "",
-            section_heading,
-        ]
-        document_title = metadata_title
-
+    title_content = re.sub(r"^ {0,3}#\s+", "", lines[heading_index])
+    title_content = re.sub(r"\s+#+\s*$", "", title_content)
+    lines[heading_index:heading_index + 1] = [
+        '::: {custom-style="Title"}', title_content, ':::',
+    ]
     removed = False
     for index in range(1, frontmatter_end):
         if re.match(r"^\s*title\s*:", lines[index], flags=re.IGNORECASE):
@@ -1610,7 +1588,7 @@ def suppress_frontmatter_title_when_h1_exists(
             removed = True
             break
     suffix = "\n" if text.endswith("\n") else ""
-    return "\n".join(lines) + suffix, document_title, removed
+    return "\n".join(lines) + suffix, metadata_title, removed
 
 
 def count_ast_note_paragraphs(ast: dict[str, Any]) -> int:
@@ -3680,8 +3658,10 @@ def role_for_paragraph(
     if text in {"参考文献", "References"}:
         return "reference_heading"
     normalized_name = re.sub(r"\s+", "", name).lower()
-    if name.lower() in {"heading 1", "title", "标题 1", "标题1"}:
+    if normalized_name in {"title", "标题"}:
         return "title"
+    if normalized_name in {"heading1", "标题1"}:
+        return "heading1"
     if normalized_name in {"heading2", "标题2"}:
         return "heading2"
     if normalized_name in {"heading3", "标题3"}:
@@ -4083,7 +4063,8 @@ def format_body_paragraphs(
         "normal": get_style_id(styles, "Normal"),
         "body": get_style_id(styles, "Body Text"),
         "first": get_style_id(styles, "First Paragraph"),
-        "title": get_style_id(
+        "title": get_style_id(styles, "Title", "标题"),
+        "heading1": get_style_id(
             styles, "heading 1", "Heading 1", "标题 1", "标题1"
         ),
         "heading2": get_style_id(
@@ -4135,9 +4116,6 @@ def format_body_paragraphs(
             and re.sub(r"\s+", "", style_name).lower()
             not in {"heading2", "标题2"},
         )
-        if role == "title" and (counts["title"] or (
-                document_title is not None and text != document_title)):
-            role = "heading2"
         counts[role] += 1
 
         if role == "title":
@@ -4153,8 +4131,8 @@ def format_body_paragraphs(
                 keep_lines=True,
             )
             size = float(format_config["title_size_pt"])
-        elif role in ("heading2", "reference_heading"):
-            set_paragraph_style(paragraph, ids["heading2"])
+        elif role in ("heading1", "heading2", "reference_heading"):
+            set_paragraph_style(paragraph, ids["heading1" if role == "reference_heading" else role])
             set_paragraph_format(
                 paragraph,
                 alignment="left",
@@ -4166,7 +4144,7 @@ def format_body_paragraphs(
                 keep_lines=True,
                 page_break_before=role == "reference_heading",
             )
-            size = float(format_config["heading2_size_pt"])
+            size = float(format_config["heading1_size_pt" if role in {"heading1", "reference_heading"} else "heading2_size_pt"])
         elif role == "heading3":
             set_paragraph_style(paragraph, ids["heading3"])
             set_paragraph_format(
@@ -4274,7 +4252,13 @@ def format_body_paragraphs(
             )
             size = float(format_config["body_size_pt"])
 
-        if role in {"title", "heading2", "heading3", "heading4", "reference_heading"}:
+        if role in {"title", "heading1", "heading2", "heading3", "heading4", "reference_heading"}:
+            outline = get_or_add(get_or_add(paragraph, W("pPr")), W("outlineLvl"))
+            outline_level = {"title": 9, "heading1": 0, "heading2": 1, "heading3": 2, "heading4": 3, "reference_heading": 0}[role]
+            deeper = re.fullmatch(r"(?:heading|标题)([5-9])", re.sub(r"\s+", "", style_name).lower())
+            if role == "heading4" and deeper:
+                outline_level = int(deeper.group(1)) - 1
+            outline.set(W("val"), str(outline_level))
             indent = get_or_add(get_or_add(paragraph, W("pPr")), W("ind"))
             for attribute in ("left", "right", "leftChars", "rightChars"):
                 indent.set(W(attribute), "0")
@@ -4532,6 +4516,51 @@ def apply_zotero_results(document, results, format_config):
                 nodes[0].text = "References"
                 for node in nodes[1:]: node.text = ""
 
+def reorder_bilingual_table_captions(document, *, styles):
+    """Keep existing EN table captions above their table; retain notes below.
+
+    Move complete XML paragraphs so cross-reference fields and formatting survive.
+    Only an adjacent EN caption with the same number as the preceding CN caption
+    belongs to this table; do not consume a later table's heading.
+    """
+    names = {value: key for key, value in styles.items()}
+    moved = 0
+    for table in list(document.iter(W("tbl"))):
+        previous = table.getprevious()
+        while previous is not None and previous.tag == W("p") and not paragraph_text(previous) and not previous.xpath('.//w:drawing|.//w:fldChar', namespaces=NS):
+            previous = previous.getprevious()
+        if previous is None or previous.tag != W("p"):
+            continue
+        cn = re.match(r"^(?:表\s*|Table\s+)([0-9]+(?:[.．-][0-9]+)*)", paragraph_text(previous), re.I)
+        if not cn:
+            continue
+        node = table.getnext()
+        while node is not None:
+            following = node.getnext()
+            # pandoc-crossref wraps each table in bookmarkStart/bookmarkEnd.
+            # Move only the caption, leaving cross-reference anchors intact.
+            if node.tag in {W("bookmarkStart"), W("bookmarkEnd"), W("proofErr")}:
+                node = following
+                continue
+            if node.tag != W("p"):
+                break
+            text = paragraph_text(node)
+            if not text and not node.xpath('.//w:drawing|.//w:fldChar', namespaces=NS):
+                node = following
+                continue
+            if is_note_paragraph_text(text):
+                node = following
+                continue
+            style = node.find('w:pPr/w:pStyle', NS)
+            name = names.get(style.get(W("val")), "") if style is not None else ""
+            en = re.match(r"^Table\s+([0-9]+(?:[.．-][0-9]+)*)", text, re.I)
+            if name.casefold() == "table caption en" and en and en[1] == cn[1]:
+                table.addprevious(node)
+                moved += 1
+            break
+    return moved
+
+
 def patch_docx(
     raw_docx: Path,
     output_docx: Path,
@@ -4569,6 +4598,7 @@ def patch_docx(
             format_config=format_config,
         )
         styles = style_id_map(styles_root)
+        reorder_bilingual_table_captions(document, styles=styles)
         body_report = format_body_paragraphs(
             document,
             styles=styles,
@@ -5254,7 +5284,7 @@ def validate_docx(
             "Compact",
         )
         title_style_id = get_style_id(
-            styles, "heading 1", "Heading 1", "标题 1", "标题1"
+            styles, "Title", "标题"
         )
         body_paragraphs = document.xpath(
             ".//w:body//w:p[not(ancestor::w:tbl)]", namespaces=NS
@@ -5265,12 +5295,16 @@ def validate_docx(
                 float(format_config["title_size_pt"]),
                 line_twips(float(format_config["title_line_spacing"])),
             ),
+            "heading1": (
+                float(format_config["heading1_size_pt"]),
+                line_twips(float(format_config["heading_line_spacing"])),
+            ),
             "heading2": (
                 float(format_config["heading2_size_pt"]),
                 line_twips(float(format_config["heading_line_spacing"])),
             ),
             "reference_heading": (
-                float(format_config["heading2_size_pt"]),
+                float(format_config["heading1_size_pt"]),
                 line_twips(float(format_config["heading_line_spacing"])),
             ),
             "heading3": (
@@ -5329,7 +5363,7 @@ def validate_docx(
             )
             if role == "picture" or not text_value:
                 continue
-            if role in {"heading2", "heading3", "heading4", "reference_heading"}:
+            if role in {"heading1", "heading2", "heading3", "heading4", "reference_heading"}:
                 if paragraph.xpath("string(w:pPr/w:jc/@w:val)", namespaces=NS) != "left":
                     errors.append(f"章节标题未左对齐：{text_value}")
                 if paragraph.xpath("string(w:pPr/w:ind/@w:left)", namespaces=NS) != "0":
@@ -5442,7 +5476,7 @@ def validate_docx(
                 "string(./w:pPr/w:ind/@w:firstLine)", namespaces=NS
             )
             if title_style != title_style_id:
-                errors.append("正文题目未使用唯一的一级标题样式")
+                errors.append("正文题目未使用独立的 Title 样式")
             if title_alignment != "center":
                 errors.append("正文题目未居中")
             if title_first_line not in ("", "0"):

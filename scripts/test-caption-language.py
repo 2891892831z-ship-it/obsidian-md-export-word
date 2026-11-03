@@ -86,3 +86,55 @@ assignments = [
 assert len(assignments) == 1
 assert not isinstance(parents[assignments[0]], ast.If)
 print("Caption languages, dialog overrides, custom metadata and normal export path passed.")
+
+
+# Real crossref output includes bookmarkEnd between the table and EN caption.
+# Keep those anchors intact while moving only the matching English title.
+import tempfile
+from zipfile import ZipFile
+from lxml import etree
+with tempfile.TemporaryDirectory(prefix="bilingual-table-") as temporary:
+    output = Path(temporary) / "table.docx"
+    source = """---
+lang: zh-CN
+tableTitle: 表
+---
+
+: 中文表题 {#tbl:first}
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+注：表下注释。
+
+::: {custom-style="Table Caption EN"}
+Table [-@tbl:first] English title
+:::
+
+: 第二张表 {#tbl:second}
+
+| C | D |
+|---|---|
+| 3 | 4 |
+
+::: {custom-style="Table Caption EN"}
+Table [-@tbl:second] Second title
+:::
+"""
+    subprocess.run([args.pandoc, "-f", "markdown", "--filter", args.crossref,
+                    "-o", str(output)], input=source, text=True, encoding="utf-8",
+                   capture_output=True, check=True)
+    with ZipFile(output) as archive:
+        document = etree.fromstring(archive.read("word/document.xml"))
+        styles = module.style_id_map(etree.fromstring(archive.read("word/styles.xml")))
+    anchors = [etree.tostring(n) for n in document.xpath("//w:bookmarkStart|//w:bookmarkEnd", namespaces=module.NS)]
+    assert module.reorder_bilingual_table_captions(document, styles=styles) == 2
+    order = ["TABLE" if n.tag == module.W("tbl") else module.paragraph_text(n)
+             for n in document.find(module.W("body")) if n.tag in {module.W("p"), module.W("tbl")}]
+    assert order[0].startswith("表") and order[1] == "Table 1 English title"
+    assert order[2] == "TABLE" and order[3] == "注：表下注释。", order
+    assert order[4].startswith("表") and order[5] == "Table 2 Second title" and order[6] == "TABLE"
+    assert anchors == [etree.tostring(n) for n in document.xpath("//w:bookmarkStart|//w:bookmarkEnd", namespaces=module.NS)]
+    assert module.reorder_bilingual_table_captions(document, styles=styles) == 0
+print("Bilingual table order, notes, crossref bookmarks and repeat passes passed.")

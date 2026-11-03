@@ -1380,11 +1380,12 @@ var en = {
   "format.documentLanguage.zhCN": "Chinese",
   "format.documentLanguage.en": "English",
   "format.section.headings": "Title and headings",
-  "format.titleSize.name": "Article title size (Markdown #)",
+  "format.titleSize.name": "Document title size (frontmatter title, Word Title)",
   "format.titleLineSpacing.name": "Article title line spacing",
-  "format.heading2Size.name": "Level 1 section heading size (Markdown ##)",
-  "format.heading3Size.name": "Level 2 section heading size (Markdown ###)",
-  "format.heading4Size.name": "Level 3 section heading size (Markdown ####)",
+  "format.heading1Size.name": "Level 1 heading size (Markdown #)",
+  "format.heading2Size.name": "Level 2 heading size (Markdown ##)",
+  "format.heading3Size.name": "Level 3 heading size (Markdown ###)",
+  "format.heading4Size.name": "Level 4 heading size (Markdown ####)",
   "format.headingLineSpacing.name": "Section heading line spacing",
   "format.section.tablesCaptionsNotes": "Tables, captions, and notes",
   "format.tableSize.name": "Table font size (including formulas)",
@@ -1706,11 +1707,12 @@ var zhCN = {
   "format.documentLanguage.zhCN": "\u4E2D\u6587\u7A3F",
   "format.documentLanguage.en": "\u82F1\u6587\u7A3F",
   "format.section.headings": "\u9898\u76EE\u4E0E\u6807\u9898",
-  "format.titleSize.name": "\u6587\u7AE0\u9898\u76EE\u5B57\u53F7\uFF08Markdown #\uFF09",
+  "format.titleSize.name": "\u603B\u9898\u76EE\u5B57\u53F7\uFF08frontmatter title\uFF0CWord Title\uFF09",
   "format.titleLineSpacing.name": "\u6587\u7AE0\u9898\u76EE\u884C\u8DDD",
-  "format.heading2Size.name": "\u4E00\u7EA7\u8282\u6807\u9898\u5B57\u53F7\uFF08Markdown ##\uFF09",
-  "format.heading3Size.name": "\u4E8C\u7EA7\u8282\u6807\u9898\u5B57\u53F7\uFF08Markdown ###\uFF09",
-  "format.heading4Size.name": "\u4E09\u7EA7\u8282\u6807\u9898\u5B57\u53F7\uFF08Markdown ####\uFF09",
+  "format.heading1Size.name": "\u4E00\u7EA7\u6807\u9898\u5B57\u53F7\uFF08Markdown #\uFF09",
+  "format.heading2Size.name": "\u4E8C\u7EA7\u6807\u9898\u5B57\u53F7\uFF08Markdown ##\uFF09",
+  "format.heading3Size.name": "\u4E09\u7EA7\u6807\u9898\u5B57\u53F7\uFF08Markdown ###\uFF09",
+  "format.heading4Size.name": "\u56DB\u7EA7\u6807\u9898\u5B57\u53F7\uFF08Markdown ####\uFF09",
   "format.headingLineSpacing.name": "\u8282\u6807\u9898\u884C\u8DDD",
   "format.section.tablesCaptionsNotes": "\u8868\u683C\u3001\u56FE\u8868\u9898\u4E0E\u6CE8\u91CA",
   "format.tableSize.name": "\u8868\u683C\u5B57\u53F7\uFF08\u542B\u8868\u5185\u516C\u5F0F\uFF09",
@@ -2119,7 +2121,7 @@ async function discoverZoteroStyles(home = os.homedir(), environment = process.e
 }
 
 // src/main.ts
-var PLUGIN_VERSION = "1.6.4";
+var PLUGIN_VERSION = "1.6.5";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -2180,6 +2182,7 @@ var DEFAULT_FORMAT = Object.freeze({
   body_first_line_chars: 2,
   title_size_pt: 16,
   title_line_spacing: 1.5,
+  heading1_size_pt: 16,
   heading2_size_pt: 14,
   heading3_size_pt: 12,
   heading4_size_pt: 12,
@@ -2858,6 +2861,13 @@ var FormatSettingsModal = class extends import_obsidian2.Modal {
       t("format.defaultValue", { value: formatOptions.lines["1.5"] }),
       "title_line_spacing",
       formatOptions.lines
+    );
+    this.addDropdown(
+      contentEl,
+      t("format.heading1Size.name"),
+      t("format.defaultValue", { value: formatOptions.sizes["16"] }),
+      "heading1_size_pt",
+      formatOptions.sizes
     );
     this.addDropdown(
       contentEl,

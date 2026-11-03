@@ -62,12 +62,13 @@ for language,style_id in [('zh-CN','http://www.zotero.org/styles/nature'),('en-U
 print('Selected CSL IDs and locales are preserved in Chinese and English Zotero document preferences.')
 
 document=etree.fromstring(('<w:document xmlns:w="'+m.W_NS+'"><w:body>'+''.join(
-    '<w:p><w:pPr><w:pStyle w:val="H1"/><w:ind w:left="480"/></w:pPr><w:r><w:t>'+title+'</w:t></w:r></w:p>'
+    '<w:p><w:pPr><w:pStyle w:val="'+('Title' if title == 'Article title' else 'H1')+'"/><w:ind w:left="480"/></w:pPr><w:r><w:t>'+title+'</w:t></w:r></w:p>'
     for title in ['Article title','Section one','Section two'])+'</w:body></w:document>').encode())
-m.format_body_paragraphs(document,styles={'heading 1':'H1','heading 2':'H2','heading 3':'H3','heading 4':'H4','Body Text':'Body','Normal':'Normal',
+m.format_body_paragraphs(document,styles={'Title':'Title','heading 1':'H1','heading 2':'H2','heading 3':'H3','heading 4':'H4','Body Text':'Body','Normal':'Normal',
     'First Paragraph':'First','图片':'Picture','Image Caption':'Caption','Table Caption':'TableCaption','Figure Table Note':'Note','Bibliography':'Bibl'},
     format_config=copy.deepcopy(m.DEFAULT_FORMAT_CONFIG),document_title='Article title')
 paragraphs=document.xpath('.//w:body/w:p',namespaces=m.NS)
 assert [p.xpath('string(w:pPr/w:jc/@w:val)',namespaces=m.NS) for p in paragraphs]==['center','left','left']
 assert all(p.xpath('string(w:pPr/w:ind/@w:left)',namespaces=m.NS)=='0' for p in paragraphs)
+assert [p.xpath('string(w:pPr/w:pStyle/@w:val)',namespaces=m.NS) for p in paragraphs]==['Title','H1','H1']
 print('Only the article title is centered; H1 section headings are left aligned with zero inherited indent.')

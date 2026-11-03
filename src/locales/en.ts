@@ -106,14 +106,15 @@ export const en: Record<TranslationKey, string> = {
   "format.documentLanguage.zhCN": "Chinese",
   "format.documentLanguage.en": "English",
   "format.section.headings": "Title and headings",
-  "format.titleSize.name": "Article title size (Markdown #)",
+  "format.titleSize.name": "Document title size (frontmatter title, Word Title)",
   "format.titleLineSpacing.name": "Article title line spacing",
+  "format.heading1Size.name": "Level 1 heading size (Markdown #)",
   "format.heading2Size.name":
-    "Level 1 section heading size (Markdown ##)",
+    "Level 2 heading size (Markdown ##)",
   "format.heading3Size.name":
-    "Level 2 section heading size (Markdown ###)",
+    "Level 3 heading size (Markdown ###)",
   "format.heading4Size.name":
-    "Level 3 section heading size (Markdown ####)",
+    "Level 4 heading size (Markdown ####)",
   "format.headingLineSpacing.name": "Section heading line spacing",
   "format.section.tablesCaptionsNotes": "Tables, captions, and notes",
   "format.tableSize.name": "Table font size (including formulas)",

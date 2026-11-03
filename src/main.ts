@@ -37,7 +37,7 @@ import { discoverZoteroStyles } from "./zotero-styles";
 
 declare const __GITHUB_REPOSITORY__: string;
 
-const PLUGIN_VERSION = "1.6.4";
+const PLUGIN_VERSION = "1.6.5";
 const RUNTIME_MANIFEST = "runtime-manifest.json";
 const PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 const RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -100,6 +100,7 @@ const DEFAULT_FORMAT = Object.freeze({
   body_first_line_chars: 2,
   title_size_pt: 16,
   title_line_spacing: 1.5,
+  heading1_size_pt: 16,
   heading2_size_pt: 14,
   heading3_size_pt: 12,
   heading4_size_pt: 12,
@@ -960,6 +961,13 @@ class FormatSettingsModal extends Modal {
       t("format.defaultValue", { value: formatOptions.lines["1.5"] }),
       "title_line_spacing",
       formatOptions.lines
+    );
+    this.addDropdown(
+      contentEl,
+      t("format.heading1Size.name"),
+      t("format.defaultValue", { value: formatOptions.sizes["16"] }),
+      "heading1_size_pt",
+      formatOptions.sizes
     );
     this.addDropdown(
       contentEl,
