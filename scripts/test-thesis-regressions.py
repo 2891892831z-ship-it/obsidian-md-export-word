@@ -13,6 +13,45 @@ spec = importlib.util.spec_from_file_location('exporter', root / 'runtime/script
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
+# Bibliography dialog settings: zero left/right, hanging two characters.
+from zipfile import ZipFile
+
+for template in (root / 'runtime/Word-Template').glob('*.docx'):
+    with ZipFile(template) as archive:
+        styles = etree.fromstring(archive.read('word/styles.xml'))
+    style_id = m.get_style_id(m.style_id_map(styles), 'Bibliography')
+    document = etree.Element(m.W('document'))
+    body = etree.SubElement(document, m.W('body'))
+    heading = etree.SubElement(body, m.W('p'))
+    etree.SubElement(etree.SubElement(heading, m.W('r')), m.W('t')).text = '参考文献'
+    config = dict(body_line_spacing=1.5, east_asia_font='SimSun',
+                  western_font='Times New Roman', body_size_pt=12)
+    m.insert_bibliography_field(document, bibliography_style_id=style_id,
+                                format_config=config)
+    # Rendered bibliography entries inherit the field paragraph's properties.
+    body.append(copy.deepcopy(body[-1]))
+    fields = document.xpath('.//w:instrText/text()', namespaces=m.NS)
+    other_styles = [etree.tostring(s) for s in styles.findall(m.W('style'))
+                    if s.get(m.W('styleId')) != style_id]
+    m.patch_bibliography_indents(document, styles, format_config=config)
+    indents = document.xpath('.//w:pPr[w:pStyle/@w:val=$sid]/w:ind',
+                             namespaces=m.NS, sid=style_id)
+    indents += styles.xpath('./w:style[@w:styleId=$sid]/w:pPr/w:ind',
+                             namespaces=m.NS, sid=style_id)
+    assert len(indents) == 3
+    for indent in indents:
+        assert indent.get(m.W('hangingChars')) == '200'
+        for attribute in ('left', 'right', 'leftChars', 'rightChars'):
+            assert indent.get(m.W(attribute)) == '0'
+        assert indent.get(m.W('firstLine')) is None
+        assert indent.get(m.W('firstLineChars')) is None
+    assert fields == document.xpath('.//w:instrText/text()', namespaces=m.NS)
+    assert other_styles == [etree.tostring(s) for s in styles.findall(m.W('style'))
+                            if s.get(m.W('styleId')) != style_id]
+    before = etree.tostring(document)
+    m.patch_bibliography_indents(document, styles, format_config=config)
+    assert before == etree.tostring(document)
+
 cases = [
     ('---\ntitle: Article\n---\n# Article\n\n# Background\n\n# Methods\n', 'Article', True),
     ('---\ntitle: Thesis\n---\n# 第1章 绪论\n\n# 第2章 方法\n', 'Thesis', False),

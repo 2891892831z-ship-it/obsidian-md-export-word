@@ -2121,7 +2121,7 @@ async function discoverZoteroStyles(home = os.homedir(), environment = process.e
 }
 
 // src/main.ts
-var PLUGIN_VERSION = "1.6.5";
+var PLUGIN_VERSION = "1.6.6";
 var RUNTIME_MANIFEST = "runtime-manifest.json";
 var PROGRESS_PREFIX = "@@MD_EXPORT_PROGRESS@@";
 var RUNTIME_DOWNLOAD_MAX_ATTEMPTS = 3;

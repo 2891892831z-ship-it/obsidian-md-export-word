@@ -2875,6 +2875,31 @@ def patch_settings(settings_root: etree._Element) -> None:
         remove_direct(settings_root, W(tag))
 
 
+def set_bibliography_indent(ppr: etree._Element, *, points: float) -> None:
+    """Word paragraph dialog: left/right 0, hanging exactly 2 characters."""
+    indent = get_or_add(ppr, W("ind"))
+    indent.attrib.clear()
+    for name in ("left", "right", "leftChars", "rightChars"):
+        indent.set(W(name), "0")
+    indent.set(W("hangingChars"), "200")
+    # Physical fallback for readers that do not implement character indents.
+    indent.set(W("hanging"), str(int(round(points * 2 * 20))))
+
+
+def patch_bibliography_indents(document, styles_root, *, format_config):
+    styles = style_id_map(styles_root)
+    style_id = get_style_id(styles, "Bibliography")
+    points = float(format_config["body_size_pt"])
+    for style in styles_root.findall(W("style")):
+        if style.get(W("styleId")) == style_id:
+            set_bibliography_indent(get_or_add(style, W("pPr")), points=points)
+    for paragraph in document.iter(W("p")):
+        ppr = paragraph.find(W("pPr"))
+        pstyle = ppr.find(W("pStyle")) if ppr is not None else None
+        if pstyle is not None and pstyle.get(W("val")) == style_id:
+            set_bibliography_indent(ppr, points=points)
+
+
 def insert_bibliography_field(
     document_root: etree._Element,
     *,
@@ -4715,6 +4740,9 @@ def patch_docx(
         patch_crossref_number_spacing(document, format_config.get("document_language", ""))
         patch_section(document, format_config=format_config)
         patch_settings(settings)
+        patch_bibliography_indents(
+            document, styles_root, format_config=format_config
+        )
 
         replacements["word/document.xml"] = etree.tostring(
             document,
