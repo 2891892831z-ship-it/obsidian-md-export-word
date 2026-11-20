@@ -25,5 +25,6 @@ export function renderCsl(input, locales) {
   const bibliography=engine.makeBibliography();
   if(citations.length!==input.clusters.length || citations.some(value=>!value))throw Error("Incomplete CSL citations");
   if(!bibliography || !bibliography[1].length)throw Error("The selected CSL has no bibliography");
-  return {citations,bibliography:bibliography[1]};
+  const ids=(bibliography[0].entry_ids||[]).flat() as string[];
+  return {citations,bibliography:bibliography[1],bibliographyIds:ids};
 }

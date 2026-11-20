@@ -1843,6 +1843,113 @@ def normalize_markdown_highlights(text: str) -> tuple[str, int]:
     return "\n".join(output) + ("\n" if text.endswith("\n") else ""), changes
 
 
+def normalize_markdown_range_tildes(text: str) -> tuple[str, int]:
+    r"""Escape bare ``~`` range separators Pandoc would pair as subscripts.
+
+    Chinese manuscripts write numeric ranges as ``0.05%~0.1%（500~1000 ppm）``.
+    Pandoc's subscript extension consumes ``~...~`` whenever no whitespace
+    lies between the two tildes, so that sentence exports with ``0.1%（500``
+    shrunk into a subscript and both separators gone. Escape tildes that sit
+    between a digit-or-percent and a digit so deliberate letter-led subscripts
+    (``N~2~``, ``O~2~``, ``eta~He~``) keep rendering as real subscripts, while
+    numeric ranges stay literal. Metadata, code fences, inline code and math
+    are left untouched, and already-escaped ``\~`` is never double-escaped.
+    """
+    lines = text.splitlines()
+    fence_char = ""
+    fence_length = 0
+    in_math = False
+    in_metadata = bool(lines and lines[0].strip() == "---")
+    fence_pattern = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+    output: list[str] = []
+    changes = 0
+
+    for index, line in enumerate(lines):
+        if in_metadata:
+            if index and line.strip() in {"---", "..."}:
+                in_metadata = False
+            output.append(line)
+            continue
+        if fence_char:
+            if re.fullmatch(
+                rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*",
+                line,
+            ):
+                fence_char = ""
+            output.append(line)
+            continue
+        if line.strip() == "$$":
+            in_math = not in_math
+            output.append(line)
+            continue
+        if in_math:
+            output.append(line)
+            continue
+        fence = fence_pattern.match(line)
+        if fence:
+            fence_char = fence.group(1)[0]
+            fence_length = len(fence.group(1))
+            output.append(line)
+            continue
+
+        escape_at: set[int] = set()
+        code_ticks = 0
+        math_dollars = 0
+        cursor = 0
+        while cursor < len(line):
+            char = line[cursor]
+            if char == "`":
+                end = cursor + 1
+                while end < len(line) and line[end] == "`":
+                    end += 1
+                run_length = end - cursor
+                if code_ticks == 0:
+                    code_ticks = run_length
+                elif code_ticks == run_length:
+                    code_ticks = 0
+                cursor = end
+                continue
+            if code_ticks:
+                cursor += 1
+                continue
+            if char == "$":
+                end = cursor + 1
+                while end < len(line) and line[end] == "$":
+                    end += 1
+                run_length = end - cursor
+                if math_dollars == 0:
+                    math_dollars = run_length
+                elif math_dollars == run_length:
+                    math_dollars = 0
+                cursor = end
+                continue
+            if math_dollars:
+                cursor += 1
+                continue
+            if (
+                char == "~"
+                and cursor > 0
+                and line[cursor - 1] in "0123456789%"
+                and cursor + 1 < len(line)
+                and line[cursor + 1] in "0123456789"
+            ):
+                escape_at.add(cursor)
+            cursor += 1
+
+        if escape_at:
+            pieces: list[str] = []
+            for position, character in enumerate(line):
+                if position in escape_at:
+                    pieces.append("\\")
+                pieces.append(character)
+            line = "".join(pieces)
+            changes += len(escape_at)
+        output.append(line)
+
+    newline = "\r\n" if "\r\n" in text else "\n"
+    return newline.join(output) + (newline if text.endswith("\n") else ""), changes
+
+
 def strip_static_bibliography(text: str) -> tuple[str, bool]:
     lines = text.splitlines()
     in_frontmatter = bool(lines and lines[0].strip() == "---")
@@ -1963,6 +2070,7 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
     prepared, citation_space_changes = normalize_markdown_citation_spacing(
         prepared
     )
+    prepared, range_tilde_changes = normalize_markdown_range_tildes(prepared)
     prepared, removed_static_refs = strip_static_bibliography(prepared)
     prepared, equation_numbers = label_numbered_equations(prepared)
     return prepared, {
@@ -1972,6 +2080,7 @@ def prepare_markdown(source: str) -> tuple[str, dict[str, Any]]:
         "image_space_changes": image_space_changes,
         "html_mark_changes": html_mark_changes,
         "markdown_mark_changes": markdown_mark_changes,
+        "range_tilde_changes": range_tilde_changes,
         "document_title": document_title,
         "frontmatter_title_suppressed": frontmatter_title_suppressed,
     }
@@ -2876,7 +2985,28 @@ def patch_settings(settings_root: etree._Element) -> None:
 
 
 def set_bibliography_indent(ppr: etree._Element, *, points: float) -> None:
-    """Word paragraph dialog: left/right 0, hanging exactly 2 characters."""
+    """Word paragraph dialog: left/right 0, hanging exactly 2 characters,
+    justified, and Latin text allowed to break in the middle of a word.
+
+    Bibliography entries end in long DOIs/URLs; without wordWrap=0 Word
+    cannot break them inside the word, so the justified line either
+    overflows the right margin or stretches CJK gaps across the line.
+    """
+    # OOXML CT_PPr order requires wordWrap before spacing/ind/jc. Existing
+    # children may already be out of order; insert before the earliest one.
+    word_wrap = direct(ppr, W("wordWrap"))
+    if word_wrap is None:
+        word_wrap = etree.Element(W("wordWrap"))
+        following = [
+            node
+            for tag in ("spacing", "ind", "contextualSpacing", "jc")
+            if (node := direct(ppr, W(tag))) is not None
+        ]
+        if following:
+            min(following, key=ppr.index).addprevious(word_wrap)
+        else:
+            ppr.append(word_wrap)
+    word_wrap.set(W("val"), "0")
     indent = get_or_add(ppr, W("ind"))
     indent.attrib.clear()
     for name in ("left", "right", "leftChars", "rightChars"):
@@ -4379,10 +4509,40 @@ def render_csl_multilingual(pandoc, csl_path, language, references, clusters):
             entries[block["c"][0][0]] = [inline for paragraph in walk_ast(block["c"][1])
                 if paragraph.get("t") in {"Para","Plain"} for inline in paragraph["c"]]
     citations = [entries.get(f"md-csl-citation-{i}",[]) for i in range(len(clusters))]
-    bibliography = [entries.get(f"md-csl-bibliography-{i}",[]) for i in range(len(result["bibliography"]))]
-    if any(not entry for entry in citations + bibliography):
+    ids = [str(value) for value in (result.get("bibliographyIds") or [])]
+    bibliography = []
+    for i, _ in enumerate(result["bibliography"]):
+        key = ids[i] if i < len(ids) else None
+        bibliography.append((key, entries.get(f"md-csl-bibliography-{i}",[])))
+    if any(not entry for entry in citations) or any(not inlines for _, inlines in bibliography):
         raise ExportError("双语引用或参考文献结果不完整")
-    return {"citations":citations,"bibliography":bibliography}
+    return {"citations":citations,"bibliography":bibliography,"delimiter":citation_delimiter(csl_path)}
+
+
+_CJK_PATTERN = re.compile(r"[㐀-䶿一-鿿]")
+
+
+def looks_western_reference(reference: dict) -> bool:
+    """Heuristic: an entry whose title and creators contain no CJK is western.
+
+    GB/T 7714 renders Latin entries with English terms ("et al.") and CJK
+    entries with Chinese ones ("等"). Zotero items often lack a language
+    field, which citeproc needs to pick the right terms, so the exporter
+    infers it from the entry's own text. Entries that already declare a
+    language are never overridden.
+    """
+    for field in ("title", "container-title", "shortTitle", "volume-title"):
+        value = reference.get(field)
+        if isinstance(value, str) and _CJK_PATTERN.search(value):
+            return False
+    for creator in reference.get("author", []) or []:
+        name = " ".join(
+            str(part) for part in creator.values() if isinstance(part, str)
+        )
+        if _CJK_PATTERN.search(name):
+            return False
+    title = reference.get("title")
+    return isinstance(title, str) and bool(title.strip())
 
 
 def render_zotero_results(raw_docx, pandoc, csl_path, language, temp_dir):
@@ -4401,6 +4561,8 @@ def render_zotero_results(raw_docx, pandoc, csl_path, language, temp_dir):
             key = "zotero-" + str(item["id"])
             reference = copy.deepcopy(item["itemData"])
             reference["id"] = key
+            if not reference.get("language") and looks_western_reference(reference):
+                reference["language"] = "en"
             references[key] = reference
             cluster.append({**{name:item[name] for name in ("prefix","suffix","locator","label","suppress-author") if name in item},"id":key})
             suffix = item.get("suffix", "")
@@ -4435,10 +4597,174 @@ def render_zotero_results(raw_docx, pandoc, csl_path, language, temp_dir):
                 if entry.get("t") == "Div":
                     paragraphs = [n["c"] for n in entry["c"][1] if n.get("t") in {"Para", "Plain"}]
                     if paragraphs:
-                        bibliography.append(sum(paragraphs, []))
+                        entry_id = str(entry["c"][0][0])
+                        key = entry_id[4:] if entry_id.startswith("ref-") else entry_id
+                        bibliography.append((key, sum(paragraphs, [])))
     if len(citations) != len(fields) or not bibliography:
         raise ExportError("作者—年份或参考文献渲染不完整，已停止导出")
-    return {"citations": citations, "bibliography": bibliography}
+    return {
+        "citations": citations,
+        "bibliography": bibliography,
+        "delimiter": citation_delimiter(csl_path),
+    }
+
+
+def citation_delimiter(csl_path) -> str:
+    """Read the in-cluster citation delimiter from the CSL layout.
+
+    Author-date clusters join multiple citations with this delimiter, so it
+    is also the boundary used to link each citation to its bibliography
+    entry. Falls back to Pandoc's default "; " when the style has none.
+    """
+    if not csl_path:
+        return "; "
+    try:
+        root = etree.parse(str(csl_path)).getroot()
+    except Exception:
+        return "; "
+    namespace = root.nsmap.get(None)
+    paths = (
+        ".//c:citation/c:layout",
+        ".//citation/layout",
+    )
+    for expression in paths:
+        try:
+            for layout in root.xpath(
+                expression, namespaces={"c": namespace} if namespace else None
+            ):
+                delimiter = layout.get("delimiter")
+                if delimiter:
+                    return delimiter
+        except Exception:
+            continue
+    return "; "
+
+
+def citation_bookmark_name(citekey) -> str:
+    """Word bookmark names: letter-first, word characters only, <=40 chars."""
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", str(citekey))
+    return ("Ref_" + safe)[:40]
+
+
+def _split_run_nodes(run_nodes, delimiter: str, group_count: int):
+    """Split rendered citation runs into groups per cluster citation item.
+
+    The rendered cluster text must contain exactly group_count-1 delimiter
+    occurrences; otherwise None is returned so callers can fall back to
+    linking the whole cluster to its first bibliography entry. Runs that
+    straddle a delimiter are duplicated and sliced by text.
+    """
+    if group_count <= 0:
+        return None
+    if group_count == 1:
+        return [list(run_nodes)]
+
+    texts, offsets = [], []
+    cursor = 0
+    for run in run_nodes:
+        node = run.find(W("t"))
+        text = node.text or "" if node is not None else ""
+        offsets.append(cursor)
+        texts.append(text)
+        cursor += len(text)
+    full = "".join(texts)
+    if full.count(delimiter) != group_count - 1:
+        return None
+    cuts = []
+    position = full.find(delimiter)
+    while position >= 0:
+        cuts.append(position)
+        position = full.find(delimiter, position + len(delimiter))
+    boundaries = set()
+    for cut in cuts:
+        boundaries.add(cut)
+        boundaries.add(cut + len(delimiter))
+
+    pieces = []  # (run_index, global_start, global_end)
+    for index, text in enumerate(texts):
+        if not text:
+            continue
+        start = offsets[index]
+        end = start + len(text)
+        points = sorted(point for point in boundaries if start < point < end)
+        previous = start
+        for point in points + [end]:
+            if point > previous:
+                pieces.append((index, previous, point))
+            previous = point
+
+    groups = [[] for _ in range(group_count)]
+    for index, piece_start, piece_end in pieces:
+        group_index = sum(1 for cut in cuts if cut < piece_start)
+        groups[group_index].append((index, piece_start, piece_end))
+
+    materialized = []
+    for group in groups:
+        nodes = []
+        segments_by_run: dict[int, list] = {}
+        for index, piece_start, piece_end in group:
+            segments_by_run.setdefault(index, []).append((piece_start, piece_end))
+        for index in sorted(segments_by_run):
+            source = run_nodes[index]
+            run_start = offsets[index]
+            text = texts[index]
+            segments = segments_by_run[index]
+            # Merge adjacent segments separated only by delimiter characters.
+            merged = [list(segments[0])]
+            for piece_start, piece_end in segments[1:]:
+                if piece_start == merged[-1][1]:
+                    merged[-1][1] = piece_end
+                else:
+                    merged.append([piece_start, piece_end])
+            for piece_start, piece_end in merged:
+                if piece_start - run_start == 0 and piece_end - run_start == len(text):
+                    nodes.append(source)
+                else:
+                    clone = copy.deepcopy(source)
+                    node = clone.find(W("t"))
+                    node.text = text[piece_start - run_start:piece_end - run_start]
+                    nodes.append(clone)
+        materialized.append(nodes)
+    return materialized
+
+
+def _next_bookmark_id(document) -> int:
+    highest = 0
+    for node in document.iter(W("bookmarkStart")):
+        try:
+            highest = max(highest, int(node.get(W("id"), "0")))
+        except ValueError:
+            continue
+    return highest + 1
+
+
+def linked_citation_nodes(run_nodes, item_keys, delimiter: str, anchor_for):
+    """Wrap citation runs in internal hyperlinks to bibliography bookmarks.
+
+    Single-citation clusters link directly. Multi-citation clusters link
+    each rendered citation to its own entry when the delimiter splits the
+    text cleanly; otherwise the whole cluster links to the first entry.
+    Runs whose target entry has no bookmark stay outside any link.
+    """
+    keys = [key for key in item_keys if key in anchor_for]
+    if not keys:
+        return list(run_nodes)
+    groups = _split_run_nodes(run_nodes, delimiter, len(keys))
+    if groups is None:
+        keys = keys[:1]
+        groups = [list(run_nodes)]
+    output = []
+    for key, group in zip(keys, groups):
+        anchor = anchor_for.get(key)
+        if not anchor or not group:
+            output.extend(group)
+            continue
+        link = etree.Element(W("hyperlink"))
+        link.set(W("anchor"), anchor)
+        for run in group:
+            link.append(run)
+        output.append(link)
+    return output
 
 
 def normalize_zotero_run_fonts_english(document, western_font):
@@ -4467,7 +4793,13 @@ def normalize_zotero_run_fonts_english(document, western_font):
 
 
 def apply_zotero_results(document, results, format_config):
-    """Populate live Zotero fields without changing their IDs or citation items."""
+    """Populate live Zotero fields without changing their IDs or citation items.
+
+    Rendered citations are additionally wrapped in internal hyperlinks that
+    jump to a bookmark on the matching bibliography entry (Ctrl+Click in
+    Word). Zotero refresh in Word rewrites the field results and drops the
+    links; re-exporting restores them.
+    """
     if not results:
         return
     def runs(inlines, inherited=None, base_rpr=None):
@@ -4501,15 +4833,25 @@ def apply_zotero_results(document, results, format_config):
     fields = [field for field in field_inventory(document) if "ZOTERO_ITEM" in field["code"]]
     if len(fields) != len(results["citations"]):
         raise ExportError("Zotero 引文域在格式处理后发生变化")
+    delimiter = str(results.get("delimiter") or "; ")
+    anchor_for = {
+        key: citation_bookmark_name(key)
+        for key, _ in results.get("bibliography", [])
+        if key
+    }
+    bookmark_id = _next_bookmark_id(document)
     for field, inlines in zip(fields, results["citations"]):
         old = field["result_nodes"]
         if not old:
             raise ExportError("Zotero 引文域缺少显示结果")
         first_run = old[0].getparent(); parent = first_run.getparent(); index = parent.index(first_run)
-        for run in runs(inlines, base_rpr=first_run.find(W("rPr"))): parent.insert(index, run); index += 1
-        for node in old: node.text = ""
         marker = re.search(r"CSL_CITATION\s+", field["code"])
         data, _ = json.JSONDecoder().raw_decode(field["code"][marker.end():].lstrip())
+        item_keys = ["zotero-" + str(item.get("id")) for item in data.get("citationItems", [])]
+        rendered_runs = runs(inlines, base_rpr=first_run.find(W("rPr")))
+        for node in linked_citation_nodes(rendered_runs, item_keys, delimiter, anchor_for):
+            parent.insert(index, node); index += 1
+        for node in old: node.text = ""
         data["properties"]["formattedCitation"] = stringify_inlines(inlines)
         data["properties"]["plainCitation"] = stringify_inlines(inlines)
         field["code_nodes"][0].text = " ADDIN ZOTERO_ITEM CSL_CITATION " + json.dumps(data, ensure_ascii=False)
@@ -4525,11 +4867,19 @@ def apply_zotero_results(document, results, format_config):
                 before.append(copy.deepcopy(child))
                 if child.xpath("./w:fldChar[@w:fldCharType='separate']", namespaces=NS): separated = True
             elif child.xpath("./w:fldChar[@w:fldCharType='end']", namespaces=NS): after.append(copy.deepcopy(child))
-        for i, inlines in enumerate(results["bibliography"]):
+        for i, (bib_key, inlines) in enumerate(results["bibliography"]):
             paragraph = etree.Element(W("p")); paragraph.append(copy.deepcopy(original.find(W("pPr"))))
             if i == 0:
                 for child in before: paragraph.append(child)
+            anchor = anchor_for.get(bib_key)
+            if anchor:
+                start = etree.SubElement(paragraph, W("bookmarkStart"))
+                start.set(W("id"), str(bookmark_id)); start.set(W("name"), anchor)
             for run in runs(inlines): paragraph.append(run)
+            if anchor:
+                end = etree.SubElement(paragraph, W("bookmarkEnd"))
+                end.set(W("id"), str(bookmark_id))
+                bookmark_id += 1
             if i == len(results["bibliography"]) - 1:
                 for child in after: paragraph.append(child)
             body.insert(index+i, paragraph)

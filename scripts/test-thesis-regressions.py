@@ -45,6 +45,16 @@ for template in (root / 'runtime/Word-Template').glob('*.docx'):
             assert indent.get(m.W(attribute)) == '0'
         assert indent.get(m.W('firstLine')) is None
         assert indent.get(m.W('firstLineChars')) is None
+        # Allow Latin text to wrap mid-word (DOIs/URLs must not overflow).
+        parent_ppr = indent.getparent()
+        word_wrap = parent_ppr.find(m.W('wordWrap'))
+        assert word_wrap is not None and word_wrap.get(m.W('val')) == '0'
+        # OOXML CT_PPr order: wordWrap must precede ind and jc.
+        assert parent_ppr.index(word_wrap) < parent_ppr.index(indent)
+        jc = parent_ppr.find(m.W('jc'))
+        if jc is not None:
+            assert jc.get(m.W('val')) == 'both'
+            assert parent_ppr.index(word_wrap) < parent_ppr.index(jc)
     assert fields == document.xpath('.//w:instrText/text()', namespaces=m.NS)
     assert other_styles == [etree.tostring(s) for s in styles.findall(m.W('style'))
                             if s.get(m.W('styleId')) != style_id]
