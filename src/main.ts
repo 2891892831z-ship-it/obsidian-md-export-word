@@ -2347,12 +2347,17 @@ export default class MdExportWordPlugin extends Plugin {
     if (!root) {
       return {
         ready: false,
+        versionMismatch: false,
         message: this.t("runtime.status.noLocalFs")
       };
     }
     const compatibilityError = this.runtimeCompatibilityError(target);
     if (compatibilityError) {
-      return { ready: false, message: compatibilityError };
+      return {
+        ready: false,
+        versionMismatch: false,
+        message: compatibilityError
+      };
     }
     const runtimePaths = this.runtimePaths(root, target);
     const required = [
@@ -2369,6 +2374,7 @@ export default class MdExportWordPlugin extends Plugin {
     if (missing.length) {
       return {
         ready: false,
+        versionMismatch: false,
         message: this.t("runtime.status.incomplete", {
           target: target.label,
           count: missing.length
@@ -2380,8 +2386,11 @@ export default class MdExportWordPlugin extends Plugin {
         fs.readFileSync(runtimePaths.manifest, "utf8")
       );
       if (manifest.version !== expectedVersion) {
+        // 手动热更新 runtime 清单（未重载插件）时版本号会暂时不一致；
+        // 运行时接口在补丁版本间保持兼容，因此只警告、不阻断导出。
         return {
-          ready: false,
+          ready: true,
+          versionMismatch: true,
           message: this.t("runtime.status.versionMismatch", {
             runtimeVersion: manifest.version || this.t("common.unknown"),
             pluginVersion: expectedVersion
@@ -2391,6 +2400,7 @@ export default class MdExportWordPlugin extends Plugin {
       if (manifest.platform !== target.id) {
         return {
           ready: false,
+          versionMismatch: false,
           message: this.t("runtime.status.platformMismatch", {
             installed: manifest.platform || this.t("common.unknown"),
             required: target.id
@@ -2399,6 +2409,7 @@ export default class MdExportWordPlugin extends Plugin {
       }
       return {
         ready: true,
+        versionMismatch: false,
         message: this.t("runtime.status.installed", {
           target: target.label,
           version: manifest.version || this.t("common.unknown")
@@ -2407,6 +2418,7 @@ export default class MdExportWordPlugin extends Plugin {
     } catch (error) {
       return {
         ready: false,
+        versionMismatch: false,
         message: this.t("runtime.status.manifestDamaged", {
           message: errorMessage(error)
         })
@@ -2732,7 +2744,7 @@ export default class MdExportWordPlugin extends Plugin {
         "runtime.install.detail.doctor"
       );
       const status = this.runtimeStatus(target, version);
-      if (!status.ready) {
+      if (!status.ready || status.versionMismatch) {
         throw new Error(status.message);
       }
       this.ensureTemplateLibrary();

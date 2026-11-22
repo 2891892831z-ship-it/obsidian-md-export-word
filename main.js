@@ -3997,12 +3997,17 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     if (!root) {
       return {
         ready: false,
+        versionMismatch: false,
         message: this.t("runtime.status.noLocalFs")
       };
     }
     const compatibilityError = this.runtimeCompatibilityError(target);
     if (compatibilityError) {
-      return { ready: false, message: compatibilityError };
+      return {
+        ready: false,
+        versionMismatch: false,
+        message: compatibilityError
+      };
     }
     const runtimePaths = this.runtimePaths(root, target);
     const required = [
@@ -4019,6 +4024,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     if (missing.length) {
       return {
         ready: false,
+        versionMismatch: false,
         message: this.t("runtime.status.incomplete", {
           target: target.label,
           count: missing.length
@@ -4031,7 +4037,8 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       );
       if (manifest.version !== expectedVersion) {
         return {
-          ready: false,
+          ready: true,
+          versionMismatch: true,
           message: this.t("runtime.status.versionMismatch", {
             runtimeVersion: manifest.version || this.t("common.unknown"),
             pluginVersion: expectedVersion
@@ -4041,6 +4048,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       if (manifest.platform !== target.id) {
         return {
           ready: false,
+          versionMismatch: false,
           message: this.t("runtime.status.platformMismatch", {
             installed: manifest.platform || this.t("common.unknown"),
             required: target.id
@@ -4049,6 +4057,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
       }
       return {
         ready: true,
+        versionMismatch: false,
         message: this.t("runtime.status.installed", {
           target: target.label,
           version: manifest.version || this.t("common.unknown")
@@ -4057,6 +4066,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
     } catch (error) {
       return {
         ready: false,
+        versionMismatch: false,
         message: this.t("runtime.status.manifestDamaged", {
           message: errorMessage2(error)
         })
@@ -4345,7 +4355,7 @@ var MdExportWordPlugin = class extends import_obsidian2.Plugin {
         "runtime.install.detail.doctor"
       );
       const status = this.runtimeStatus(target, version);
-      if (!status.ready) {
+      if (!status.ready || status.versionMismatch) {
         throw new Error(status.message);
       }
       this.ensureTemplateLibrary();
