@@ -62,6 +62,41 @@ for template in (root / 'runtime/Word-Template').glob('*.docx'):
     m.patch_bibliography_indents(document, styles, format_config=config)
     assert before == etree.tostring(document)
 
+# Entry-language split: Chinese entries hang two Chinese characters,
+# English-only entries hang two English characters (one character unit,
+# since one Chinese character is as wide as two Latin characters).
+config = dict(body_line_spacing=1.5, east_asia_font='SimSun',
+              western_font='Times New Roman', body_size_pt=12)
+document = etree.Element(m.W('document'))
+body = etree.SubElement(document, m.W('body'))
+entry_texts = (
+    'Benson S M, Surles T. Carbon dioxide capture and storage[J].',
+    '张三, 李四. 二氧化碳捕集与封存研究[J]. 岩石学报, 2020.',
+    'Wang W. Mixed entry containing 汉字 characters.',
+)
+for text in entry_texts:
+    paragraph = etree.SubElement(body, m.W('p'))
+    paragraph_ppr = etree.SubElement(paragraph, m.W('pPr'))
+    etree.SubElement(paragraph_ppr, m.W('pStyle')).set(m.W('val'), 'Bibliography')
+    etree.SubElement(etree.SubElement(paragraph, m.W('r')), m.W('t')).text = text
+# The bare Zotero field paragraph (no text yet) keeps the default indent.
+field_paragraph = etree.SubElement(body, m.W('p'))
+field_ppr = etree.SubElement(field_paragraph, m.W('pPr'))
+etree.SubElement(field_ppr, m.W('pStyle')).set(m.W('val'), 'Bibliography')
+styles = etree.Element(m.W('styles'))
+bibliography_style = etree.SubElement(styles, m.W('style'))
+bibliography_style.set(m.W('styleId'), 'Bibliography')
+etree.SubElement(bibliography_style, m.W('name')).set(m.W('val'), 'Bibliography')
+m.patch_bibliography_indents(document, styles, format_config=config)
+indents = document.xpath('.//w:pPr[w:pStyle/@w:val=$sid]/w:ind',
+                         namespaces=m.NS, sid='Bibliography')
+assert len(indents) == 4
+assert [indent.get(m.W('hangingChars')) for indent in indents] == [
+    '100', '200', '200', '200']
+assert indents[0].get(m.W('hanging')) == str(int(round(12 * 1 * 20)))
+assert indents[1].get(m.W('hanging')) == str(int(round(12 * 2 * 20)))
+assert indents[3].get(m.W('hanging')) == str(int(round(12 * 2 * 20)))
+
 cases = [
     ('---\ntitle: Article\n---\n# Article\n\n# Background\n\n# Methods\n', 'Article', True),
     ('---\ntitle: Thesis\n---\n# 第1章 绪论\n\n# 第2章 方法\n', 'Thesis', False),

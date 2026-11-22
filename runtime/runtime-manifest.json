@@ -1,6 +1,6 @@
 {
   "name": "MD Export Word Runtime",
-  "version": "1.6.7",
+  "version": "1.6.8",
   "platform": "multi",
   "python": ">=3.10",
   "components": {
@@ -8,5 +8,7 @@
     "pandoc-crossref": "0.3.22",
     "lxml": "6.0.2"
   },
-  "files": {}
+  "files": {
+    "scripts/md_export_word_template.py": "cc1c7b3389b68ad4d22dbee2f8ee37e3dfbba44232995767e248385ac8fd4d59"
+  }
 }

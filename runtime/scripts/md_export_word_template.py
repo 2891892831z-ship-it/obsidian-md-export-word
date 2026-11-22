@@ -2984,9 +2984,37 @@ def patch_settings(settings_root: etree._Element) -> None:
         remove_direct(settings_root, W(tag))
 
 
-def set_bibliography_indent(ppr: etree._Element, *, points: float) -> None:
-    """Word paragraph dialog: left/right 0, hanging exactly 2 characters,
-    justified, and Latin text allowed to break in the middle of a word.
+def paragraph_is_latin_only(paragraph: etree._Element) -> bool:
+    """True when the paragraph has visible text but no CJK ideograph.
+
+    The bare Zotero bibliography field still holds its
+    ``<Bibliography: Do Zotero Refresh>`` placeholder; such paragraphs
+    are field containers rather than entries, so they keep the default
+    two-Chinese-character hanging indent.
+    """
+    joined = "".join(paragraph.xpath(".//w:t/text()", namespaces=NS))
+    if not joined.strip() or "<Bibliography:" in joined:
+        return False
+    return not any(
+        "㐀" <= char <= "鿿" or "豈" <= char <= "﫿"
+        for char in joined
+    )
+
+
+def set_bibliography_indent(
+    ppr: etree._Element,
+    *,
+    points: float,
+    hanging_chars: int = 200,
+) -> None:
+    """Word paragraph dialog: left/right 0, hanging indent, justified, and
+    Latin text allowed to break in the middle of a word.
+
+    ``hanging_chars`` is in hundredths of a character unit. Chinese
+    entries hang two Chinese characters (200); entries written purely in
+    Latin script hang two English characters, which is one character
+    unit (100) because one Chinese character is as wide as two Latin
+    characters.
 
     Bibliography entries end in long DOIs/URLs; without wordWrap=0 Word
     cannot break them inside the word, so the justified line either
@@ -3011,9 +3039,10 @@ def set_bibliography_indent(ppr: etree._Element, *, points: float) -> None:
     indent.attrib.clear()
     for name in ("left", "right", "leftChars", "rightChars"):
         indent.set(W(name), "0")
-    indent.set(W("hangingChars"), "200")
+    indent.set(W("hangingChars"), str(hanging_chars))
     # Physical fallback for readers that do not implement character indents.
-    indent.set(W("hanging"), str(int(round(points * 2 * 20))))
+    em_width = hanging_chars / 100
+    indent.set(W("hanging"), str(int(round(points * em_width * 20))))
 
 
 def patch_bibliography_indents(document, styles_root, *, format_config):
@@ -3027,7 +3056,14 @@ def patch_bibliography_indents(document, styles_root, *, format_config):
         ppr = paragraph.find(W("pPr"))
         pstyle = ppr.find(W("pStyle")) if ppr is not None else None
         if pstyle is not None and pstyle.get(W("val")) == style_id:
-            set_bibliography_indent(ppr, points=points)
+            # 中英文条目分开：中文条目悬挂 2 个中文字符，纯西文条目
+            # 悬挂 2 个英文字符（一个中文字符宽）。
+            hanging_chars = (
+                100 if paragraph_is_latin_only(paragraph) else 200
+            )
+            set_bibliography_indent(
+                ppr, points=points, hanging_chars=hanging_chars
+            )
 
 
 def insert_bibliography_field(
