@@ -2985,9 +2985,14 @@ def patch_settings(settings_root: etree._Element) -> None:
 
 
 def paragraph_is_latin_only(paragraph: etree._Element) -> bool:
-    """True when the paragraph has visible text but no CJK ideograph.
+    """True when the paragraph text is dominated by Latin letters.
 
-    The bare Zotero bibliography field still holds its
+    GB/T 7714 bilingual styles localize the author connector of English
+    entries to Chinese characters ("和"/"等"), so a lone CJK character
+    does not make an entry Chinese: such entries stay well below a small
+    CJK share while Chinese entries are dominated by CJK. The share is
+    taken over alphabetic characters only, so digits and DOIs do not
+    dilute it. The bare Zotero bibliography field still holds its
     ``<Bibliography: Do Zotero Refresh>`` placeholder; such paragraphs
     are field containers rather than entries, so they keep the default
     two-Chinese-character hanging indent.
@@ -2995,10 +3000,14 @@ def paragraph_is_latin_only(paragraph: etree._Element) -> bool:
     joined = "".join(paragraph.xpath(".//w:t/text()", namespaces=NS))
     if not joined.strip() or "<Bibliography:" in joined:
         return False
-    return not any(
+    letters = sum(char.isalpha() for char in joined)
+    if letters == 0:
+        return False
+    cjk_letters = sum(
         "㐀" <= char <= "鿿" or "豈" <= char <= "﫿"
         for char in joined
     )
+    return cjk_letters / letters < 0.08
 
 
 def set_bibliography_indent(

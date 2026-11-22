@@ -9,6 +9,6 @@
     "lxml": "6.0.2"
   },
   "files": {
-    "scripts/md_export_word_template.py": "cc1c7b3389b68ad4d22dbee2f8ee37e3dfbba44232995767e248385ac8fd4d59"
+    "scripts/md_export_word_template.py": "adbc5ea51c77acefa596ad84d72c9b0b877b25d02f22ab305453f7bc51a450c8"
   }
 }
